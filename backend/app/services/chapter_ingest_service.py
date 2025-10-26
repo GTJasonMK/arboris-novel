@@ -46,15 +46,15 @@ class ChapterIngestionService:
     ) -> None:
         """将章节正文与摘要写入向量库，供后续 RAG 检索使用。"""
         if not settings.vector_store_enabled:
-            logger.warning("向量库未启用，跳过章节向量写入: project=%s chapter=%s", project_id, chapter_number)
+            logger.debug("向量库未启用，跳过章节向量写入: project=%s chapter=%s", project_id, chapter_number)
             return
         if not content.strip():
-            logger.warning("章节正文为空，跳过向量写入: project=%s chapter=%s", project_id, chapter_number)
+            logger.debug("章节正文为空，跳过向量写入: project=%s chapter=%s", project_id, chapter_number)
             return
 
         chunks = self._split_into_chunks(content)
         if not chunks:
-            logger.warning("章节正文切分后为空，跳过向量写入: project=%s chapter=%s", project_id, chapter_number)
+            logger.debug("章节正文切分后为空，跳过向量写入: project=%s chapter=%s", project_id, chapter_number)
             return
 
         logger.info(

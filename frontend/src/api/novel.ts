@@ -196,6 +196,13 @@ export class NovelAPI {
     })
   }
 
+  static async refineBlueprint(projectId: string, refinementInstruction: string): Promise<BlueprintGenerationResponse> {
+    return request(`${NOVELS_BASE}/${projectId}/blueprint/refine`, {
+      method: 'POST',
+      body: JSON.stringify({ refinement_instruction: refinementInstruction })
+    })
+  }
+
   static async generateChapter(projectId: string, chapterNumber: number): Promise<NovelProject> {
     return request(`${WRITER_BASE}/${projectId}/chapters/generate`, {
       method: 'POST',

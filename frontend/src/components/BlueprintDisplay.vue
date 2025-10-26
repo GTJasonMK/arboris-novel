@@ -1,45 +1,91 @@
 <template>
   <div class="p-8 bg-white rounded-2xl shadow-2xl fade-in">
-    <h2 class="text-3xl font-bold text-center text-gray-800 mb-6">你的故事蓝图已生成！</h2>
+    <!-- 优化蓝图加载界面 -->
+    <div v-if="isRefining" class="text-center py-12">
+      <!-- 主加载动画 -->
+      <div class="relative mx-auto mb-8 w-24 h-24">
+        <!-- 外圆环 -->
+        <div class="absolute inset-0 border-4 rounded-full border-indigo-100"></div>
+        <!-- 旋转的渐变圆环 -->
+        <div class="absolute inset-0 border-4 border-transparent rounded-full border-t-indigo-500 border-r-indigo-400 animate-spin"></div>
+        <!-- 内部脉冲圆 -->
+        <div class="absolute inset-3 rounded-full animate-pulse opacity-20 bg-indigo-500"></div>
+        <!-- 中心图标 -->
+        <div class="absolute inset-6 rounded-full flex items-center justify-center bg-indigo-500">
+          <svg class="w-6 h-6 text-white animate-pulse" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"></path>
+          </svg>
+        </div>
+      </div>
 
-    <!-- AI消息 -->
-    <div v-if="aiMessage" class="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
-      <p class="text-blue-800">{{ aiMessage }}</p>
+      <!-- 加载文本和进度 -->
+      <div class="space-y-4">
+        <h3 class="text-xl font-semibold text-gray-800 animate-pulse">正在优化蓝图...</h3>
+        <p class="text-gray-600">AI 正在根据您的指令精心优化故事蓝图...</p>
+
+        <!-- 进度条 -->
+        <div class="w-full max-w-md mx-auto">
+          <div class="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+            <div class="h-2 rounded-full transition-all duration-1000 ease-out relative bg-gradient-to-r from-indigo-500 to-purple-600" style="width: 100%">
+              <!-- 闪光效果 -->
+              <div class="absolute inset-0 bg-gradient-to-r from-transparent via-white to-transparent opacity-30 animate-shimmer"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 温馨提示 -->
+        <div class="mt-6 p-4 bg-indigo-50 rounded-lg border border-indigo-200">
+          <p class="text-sm text-indigo-800">
+            <svg class="inline w-4 h-4 mr-2" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"></path>
+            </svg>
+            AI 正在分析优化方向，保持现有设定的连贯性，针对性地改进蓝图...
+          </p>
+        </div>
+      </div>
     </div>
 
-    <div class="prose max-w-none p-6 bg-gray-50 rounded-lg border border-gray-200" v-html="formattedBlueprint"></div>
-
-    <!-- 加载状态 -->
-    <div v-if="isSaving" class="text-center py-8">
-      <!-- 保存动画 -->
-      <div class="relative mx-auto mb-6 w-16 h-16">
-        <!-- 旋转圆环 -->
-        <div class="absolute inset-0 border-4 border-green-100 rounded-full"></div>
-        <div class="absolute inset-0 border-4 border-transparent border-t-green-500 rounded-full animate-spin"></div>
-        <!-- 中心保存图标 -->
-        <div class="absolute inset-2 bg-green-500 rounded-full flex items-center justify-center">
-          <svg class="w-6 h-6 text-white animate-pulse" fill="currentColor" viewBox="0 0 20 20">
+    <!-- 保存蓝图加载界面 -->
+    <div v-else-if="isSaving" class="text-center py-12">
+      <div class="relative mx-auto mb-8 w-24 h-24">
+        <div class="absolute inset-0 border-4 rounded-full border-green-100"></div>
+        <div class="absolute inset-0 border-4 border-transparent rounded-full border-t-green-500 border-r-green-400 animate-spin"></div>
+        <div class="absolute inset-3 rounded-full animate-pulse opacity-20 bg-green-500"></div>
+        <div class="absolute inset-6 rounded-full flex items-center justify-center bg-green-500">
+          <svg class="w-6 h-6 text-white" fill="currentColor" viewBox="0 0 20 20">
             <path d="M7.707 10.293a1 1 0 10-1.414 1.414l3 3a1 1 0 001.414 0l3-3a1 1 0 00-1.414-1.414L11 11.586V6a1 1 0 10-2 0v5.586l-1.293-1.293z"></path>
             <path d="M5 4a2 2 0 012-2h6a2 2 0 012 2v1a1 1 0 11-2 0V4H7v1a1 1 0 11-2 0V4z"></path>
           </svg>
         </div>
       </div>
-
-      <h3 class="text-lg font-semibold text-gray-800 mb-2 animate-pulse">正在保存蓝图...</h3>
-      <p class="text-gray-600">即将跳转到写作工作台，开始您的创作之旅</p>
-
-      <!-- 保存进度指示 -->
-      <div class="mt-4 w-32 mx-auto">
-        <div class="w-full bg-gray-200 rounded-full h-1">
-          <div class="h-1 bg-gradient-to-r from-green-400 to-green-600 rounded-full animate-pulse" style="width: 100%"></div>
+      <div class="space-y-4">
+        <h3 class="text-xl font-semibold text-gray-800 animate-pulse">正在保存蓝图...</h3>
+        <p class="text-gray-600">即将跳转到写作工作台，开始您的创作之旅</p>
+        <div class="w-full max-w-md mx-auto">
+          <div class="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+            <div class="h-2 rounded-full bg-gradient-to-r from-green-500 to-emerald-600" style="width: 100%">
+              <div class="absolute inset-0 bg-gradient-to-r from-transparent via-white to-transparent opacity-30 animate-shimmer"></div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
 
-    <div v-else class="text-center mt-8 space-x-4">
+    <!-- 蓝图内容显示 -->
+    <div v-else>
+      <h2 class="text-3xl font-bold text-center text-gray-800 mb-6">你的故事蓝图已生成！</h2>
+
+      <!-- AI消息 -->
+      <div v-if="aiMessage" class="mb-6 p-4 bg-blue-50 rounded-lg border border-blue-200">
+        <p class="text-blue-800">{{ aiMessage }}</p>
+      </div>
+
+      <div class="prose max-w-none p-6 bg-gray-50 rounded-lg border border-gray-200" v-html="formattedBlueprint"></div>
+
+      <div class="text-center mt-8 flex flex-wrap justify-center gap-3">
       <button
         @click="confirmRegenerate"
-        class="bg-gray-200 text-gray-700 font-bold py-3 px-8 rounded-full hover:bg-gray-300 transition-all duration-300 transform hover:scale-105"
+        class="bg-gray-200 text-gray-700 font-bold py-3 px-6 rounded-full hover:bg-gray-300 transition-all duration-300 transform hover:scale-105"
       >
         <span class="flex items-center justify-center">
           <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
@@ -49,9 +95,20 @@
         </span>
       </button>
       <button
+        @click="openRefineDialog"
+        class="bg-gradient-to-r from-indigo-500 to-purple-600 text-white font-bold py-3 px-6 rounded-full hover:from-indigo-600 hover:to-purple-700 transition-all duration-300 transform hover:scale-105 shadow-md hover:shadow-lg"
+      >
+        <span class="flex items-center justify-center">
+          <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
+            <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"></path>
+          </svg>
+          优化蓝图
+        </span>
+      </button>
+      <button
         @click="confirmBlueprint"
         :disabled="isSaving"
-        class="bg-gradient-to-r from-green-500 to-emerald-600 text-white font-bold py-3 px-8 rounded-full hover:from-green-600 hover:to-emerald-700 transition-all duration-300 transform hover:scale-105 shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
+        class="bg-gradient-to-r from-green-500 to-emerald-600 text-white font-bold py-3 px-6 rounded-full hover:from-green-600 hover:to-emerald-700 transition-all duration-300 transform hover:scale-105 shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
       >
         <span class="flex items-center justify-center">
           <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
@@ -61,6 +118,76 @@
         </span>
       </button>
     </div>
+    </div>
+
+    <!-- 优化蓝图对话框 -->
+    <transition
+      enter-active-class="transition-all duration-300"
+      leave-active-class="transition-all duration-300"
+      enter-from-class="opacity-0 scale-95"
+      leave-to-class="opacity-0 scale-95"
+    >
+      <div v-if="showRefineDialog" class="fixed inset-0 z-50 flex items-center justify-center px-4 bg-black/50 backdrop-blur-sm">
+        <div class="relative bg-white rounded-2xl shadow-2xl border border-gray-200 p-6 sm:p-8 w-full max-w-lg transform transition-all" @click.stop>
+          <button
+            @click="closeRefineDialog"
+            class="absolute top-4 right-4 text-gray-400 hover:text-gray-600 transition-colors"
+          >
+            <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd"></path>
+            </svg>
+          </button>
+
+          <h3 class="text-2xl font-bold text-gray-900 mb-4 flex items-center">
+            <svg class="w-7 h-7 mr-3 text-indigo-600" fill="currentColor" viewBox="0 0 20 20">
+              <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"></path>
+            </svg>
+            优化蓝图
+          </h3>
+
+          <p class="text-gray-600 mb-6">
+            请描述您想要改进的方向，AI 将基于当前蓝图进行针对性优化。
+          </p>
+
+          <div class="mb-6">
+            <label for="refine-instruction" class="block text-sm font-semibold text-gray-700 mb-2">
+              优化指令
+            </label>
+            <textarea
+              id="refine-instruction"
+              v-model="refineInstruction"
+              rows="5"
+              class="block w-full rounded-lg border border-gray-300 px-4 py-3 text-sm focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all duration-200 resize-none"
+              placeholder="例如：
+• 让主角性格更加复杂立体
+• 增加魔法体系的硬核设定
+• 丰富反派的动机和背景
+• 调整故事节奏，前期更紧凑"
+            ></textarea>
+            <p class="mt-2 text-xs text-gray-500">
+              提示：可以多次优化，逐步靠近理想的蓝图
+            </p>
+          </div>
+
+          <div class="flex justify-end gap-3">
+            <button
+              type="button"
+              class="px-5 py-2.5 text-sm font-medium text-gray-600 bg-white hover:bg-gray-50 border border-gray-200 rounded-lg transition-all duration-200"
+              @click="closeRefineDialog"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              class="px-5 py-2.5 text-sm font-medium text-white bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 rounded-lg shadow-md hover:shadow-lg transition-all duration-200"
+              @click="confirmRefine"
+            >
+              开始优化
+            </button>
+          </div>
+        </div>
+      </div>
+    </transition>
   </div>
 </template>
 
@@ -80,6 +207,8 @@ type ExtractedFields = Record<string, DisplayField>;
 interface Props {
   blueprint: Blueprint | null
   aiMessage?: string
+  isRefining?: boolean
+  isSaving?: boolean
 }
 
 const props = defineProps<Props>()
@@ -87,15 +216,42 @@ const props = defineProps<Props>()
 const emit = defineEmits<{
   confirm: []
   regenerate: []
+  refine: [instruction: string]
 }>()
 
 const isSaving = ref(false)
+const showRefineDialog = ref(false)
+const refineInstruction = ref('')
 
 const confirmRegenerate = async () => {
   const confirmed = await globalAlert.showConfirm('重新生成会覆盖当前蓝图，确定继续吗？', '重新生成确认')
   if (confirmed) {
     emit('regenerate')
   }
+}
+
+const openRefineDialog = () => {
+  refineInstruction.value = ''
+  showRefineDialog.value = true
+}
+
+const closeRefineDialog = () => {
+  showRefineDialog.value = false
+  refineInstruction.value = ''
+}
+
+const confirmRefine = () => {
+  if (!refineInstruction.value.trim()) {
+    globalAlert.showError('请输入优化指令', '输入错误')
+    return
+  }
+
+  const instruction = refineInstruction.value
+  showRefineDialog.value = false
+  refineInstruction.value = ''
+
+  // 立即发送事件，父组件会管理加载状态
+  emit('refine', instruction)
 }
 
 const confirmBlueprint = async () => {

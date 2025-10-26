@@ -106,8 +106,10 @@
         v-if="showBlueprint"
         :blueprint="completedBlueprint"
         :ai-message="blueprintMessage"
+        :is-refining="isRefiningBlueprint"
         @confirm="handleConfirmBlueprint"
         @regenerate="handleRegenerateBlueprint"
+        @refine="handleRefineBlueprint"
       />
     </div>
   </div>
@@ -138,6 +140,7 @@ const conversationStarted = ref(false)
 const isInitialLoading = ref(false)
 const showBlueprintConfirmation = ref(false)
 const showBlueprint = ref(false)
+const isRefiningBlueprint = ref(false)
 const chatMessages = ref<ChatMessage[]>([])
 const currentUIControl = ref<UIControl | null>(null)
 const currentTurn = ref(0)
@@ -229,17 +232,26 @@ const restoreConversation = async (projectId: string) => {
         }
       }).filter((msg): msg is ChatMessage => msg !== null && msg.content !== null) // 过滤掉空的 user message
 
-      const lastAssistantMsgStr = project.conversation_history.filter(m => m.role === 'assistant').pop()?.content
-      if (lastAssistantMsgStr) {
-        const lastAssistantMsg = JSON.parse(lastAssistantMsgStr)
-        
-        if (lastAssistantMsg.is_complete) {
-          // 如果对话已完成，直接显示蓝图确认界面
-          confirmationMessage.value = lastAssistantMsg.ai_message
-          showBlueprintConfirmation.value = true
-        } else {
-          // 否则，恢复对话
-          currentUIControl.value = lastAssistantMsg.ui_control
+      // 检查是否已有蓝图
+      if (project.blueprint) {
+        // 已有蓝图，直接显示蓝图展示界面（可以优化）
+        completedBlueprint.value = project.blueprint
+        blueprintMessage.value = '这是您之前生成的蓝图。您可以继续优化或重新生成。'
+        showBlueprint.value = true
+      } else {
+        // 没有蓝图，检查对话状态
+        const lastAssistantMsgStr = project.conversation_history.filter(m => m.role === 'assistant').pop()?.content
+        if (lastAssistantMsgStr) {
+          const lastAssistantMsg = JSON.parse(lastAssistantMsgStr)
+
+          if (lastAssistantMsg.is_complete) {
+            // 如果对话已完成，显示蓝图确认界面
+            confirmationMessage.value = lastAssistantMsg.ai_message
+            showBlueprintConfirmation.value = true
+          } else {
+            // 否则，恢复对话
+            currentUIControl.value = lastAssistantMsg.ui_control
+          }
         }
       }
       // 计算当前轮次
@@ -324,6 +336,21 @@ const handleBlueprintGenerated = (response: any) => {
 const handleRegenerateBlueprint = () => {
   showBlueprint.value = false
   showBlueprintConfirmation.value = true
+}
+
+const handleRefineBlueprint = async (instruction: string) => {
+  isRefiningBlueprint.value = true
+  try {
+    const response = await novelStore.refineBlueprint(instruction)
+    completedBlueprint.value = response.blueprint
+    blueprintMessage.value = response.ai_message
+    // 保持在蓝图展示界面，显示优化后的蓝图
+  } catch (error) {
+    console.error('优化蓝图失败:', error)
+    globalAlert.showError(`优化蓝图失败: ${error instanceof Error ? error.message : '未知错误'}`, '优化失败')
+  } finally {
+    isRefiningBlueprint.value = false
+  }
 }
 
 const handleConfirmBlueprint = async () => {

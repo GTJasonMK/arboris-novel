@@ -69,11 +69,11 @@ class ChapterContextService:
         """根据章节摘要构造检索向量，并返回 RAG 上下文。"""
         query = self._normalize(query_text)
         if not settings.vector_store_enabled or not self._vector_store:
-            logger.error("向量库未启用或初始化失败，跳过检索: project=%s", project_id)
+            logger.debug("向量库未启用或初始化失败，跳过检索: project=%s", project_id)
             return ChapterRAGContext(query=query, chunks=[], summaries=[])
 
-        # get_embedding 会自动根据配置选择正确的模型
-        embedding = await self._llm_service.get_embedding(query, user_id=user_id)
+        embedding_model = None if settings.embedding_provider == "ollama" else settings.embedding_model
+        embedding = await self._llm_service.get_embedding(query, user_id=user_id, model=embedding_model)
         if not embedding:
             logger.warning("检索查询向量生成失败: project=%s chapter_query=%s", project_id, query)
             return ChapterRAGContext(query=query, chunks=[], summaries=[])

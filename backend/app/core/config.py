@@ -77,6 +77,18 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("WRITER_CHAPTER_VERSION_COUNT", "WRITER_CHAPTER_VERSIONS"),
         description="每次生成章节的候选版本数量",
     )
+    writer_parallel_generation: bool = Field(
+        default=True,
+        env="WRITER_PARALLEL_GENERATION",
+        description="是否启用章节版本并行生成（大幅提升速度）",
+    )
+    writer_max_parallel_requests: int = Field(
+        default=3,
+        ge=1,
+        le=10,
+        env="WRITER_MAX_PARALLEL_REQUESTS",
+        description="最大并行请求数（避免 API 限流）",
+    )
     embedding_provider: str = Field(
         default="openai",
         env="EMBEDDING_PROVIDER",

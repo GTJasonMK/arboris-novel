@@ -1,12 +1,14 @@
 /.vscode
-/.venv
+/backend/.venv
 /frontend/.vscode
 /frontend/node_modules
 /backend/app/__pycache__/*.pyc
 *.pyc
 /backend/dist
 /backend/storage/*.db
-
+/backend/storage/*.log
+/docs
+/CLAUDE.md
 # 环境变量文件
 .env
 .env.*

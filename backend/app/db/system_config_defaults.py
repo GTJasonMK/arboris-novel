@@ -107,39 +107,4 @@ SYSTEM_CONFIG_DEFAULTS: list[SystemConfigDefault] = [
         value_getter=lambda config: _to_optional_str(config.writer_chapter_versions),
         description="每次生成章节的候选版本数量。",
     ),
-    SystemConfigDefault(
-        key="embedding.provider",
-        value_getter=lambda config: config.embedding_provider,
-        description="嵌入模型提供方，支持 openai 或 ollama。",
-    ),
-    SystemConfigDefault(
-        key="embedding.api_key",
-        value_getter=lambda config: config.embedding_api_key,
-        description="嵌入模型专用 API Key，留空则使用默认 LLM API Key。",
-    ),
-    SystemConfigDefault(
-        key="embedding.base_url",
-        value_getter=lambda config: _to_optional_str(config.embedding_base_url),
-        description="嵌入模型使用的 Base URL，留空则使用默认 LLM Base URL。",
-    ),
-    SystemConfigDefault(
-        key="embedding.model",
-        value_getter=lambda config: config.embedding_model,
-        description="OpenAI 嵌入模型名称。",
-    ),
-    SystemConfigDefault(
-        key="embedding.model_vector_size",
-        value_getter=lambda config: _to_optional_str(config.embedding_model_vector_size),
-        description="嵌入向量维度，留空则自动检测。",
-    ),
-    SystemConfigDefault(
-        key="ollama.embedding_base_url",
-        value_getter=lambda config: _to_optional_str(config.ollama_embedding_base_url),
-        description="Ollama 嵌入模型服务地址。",
-    ),
-    SystemConfigDefault(
-        key="ollama.embedding_model",
-        value_getter=lambda config: config.ollama_embedding_model,
-        description="Ollama 嵌入模型名称。",
-    ),
 ]

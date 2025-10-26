@@ -143,6 +143,23 @@ export const useNovelStore = defineStore('novel', () => {
     }
   }
 
+  async function refineBlueprint(refinementInstruction: string): Promise<BlueprintGenerationResponse> {
+    // Refine blueprint based on user instruction
+    isLoading.value = true
+    error.value = null
+    try {
+      if (!currentProject.value) {
+        throw new Error('没有当前项目')
+      }
+      return await NovelAPI.refineBlueprint(currentProject.value.id, refinementInstruction)
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : '优化蓝图失败'
+      throw err
+    } finally {
+      isLoading.value = false
+    }
+  }
+
   async function generateChapter(chapterNumber: number): Promise<NovelProject> {
     // 注意：这里不设置全局 isLoading，因为 WritingDesk.vue 有自己的局部加载状态
     error.value = null
@@ -308,6 +325,7 @@ export const useNovelStore = defineStore('novel', () => {
     sendConversation,
     generateBlueprint,
     saveBlueprint,
+    refineBlueprint,
     generateChapter,
     evaluateChapter,
     selectChapterVersion,

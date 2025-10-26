@@ -59,10 +59,7 @@ def sanitize_json_like_text(raw_text: str) -> str:
                 while j < length and raw_text[j] in " \t\r\n":
                     j += 1
 
-                if j >= length or raw_text[j] in "}]":
-                    in_string = False
-                    result.append(ch)
-                elif raw_text[j] in ",:":
+                if j >= length or raw_text[j] in "}]" or raw_text[j] == ",":
                     in_string = False
                     result.append(ch)
                 else:

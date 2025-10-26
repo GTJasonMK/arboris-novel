@@ -108,6 +108,16 @@ class BlueprintGenerationResponse(BaseModel):
     ai_message: str
 
 
+class BlueprintRefineRequest(BaseModel):
+    """蓝图优化请求体"""
+    refinement_instruction: str = Field(
+        ...,
+        description="用户的优化指令，描述想要改进的方向",
+        min_length=1,
+        max_length=2000
+    )
+
+
 class ChapterGenerationResponse(BaseModel):
     ai_message: str
     chapter_versions: List[Dict[str, Any]]

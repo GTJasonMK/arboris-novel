@@ -82,7 +82,7 @@
     <WDVersionDetailModal
       :show="showVersionDetailModal"
       :detail-version-index="detailVersionIndex"
-      :version="availableVersions[detailVersionIndex]"
+      :version="availableVersions[detailVersionIndex] || null"
       :is-current="isCurrentVersion(detailVersionIndex)"
       @close="closeVersionDetail"
       @select-version="selectVersionFromDetail"
@@ -265,35 +265,35 @@ const hasChapterInProgress = (chapterNumber: number) => {
 const availableVersions = computed(() => {
   // 优先使用新生成的版本（对象数组格式）
   if (chapterGenerationResult.value?.versions) {
-    console.log('使用生成结果版本:', chapterGenerationResult.value.versions)
     return chapterGenerationResult.value.versions
   }
 
   // 使用章节已有的版本（字符串数组格式，需要转换为对象数组）
   if (selectedChapter.value?.versions && Array.isArray(selectedChapter.value.versions)) {
-    console.log('原始章节版本 (字符串数组):', selectedChapter.value.versions)
-
     // 将字符串数组转换为ChapterVersion对象数组
     const convertedVersions = selectedChapter.value.versions.map((versionString, index) => {
-      console.log(`版本 ${index} 原始字符串:`, versionString)
+      // 检查是否为JSON格式
+      if (typeof versionString === 'string' && versionString.trim().startsWith('{')) {
+        try {
+          // 解析JSON字符串
+          const versionObj = JSON.parse(versionString)
 
-      try {
-        // 解析JSON字符串
-        const versionObj = JSON.parse(versionString)
-        console.log(`版本 ${index} 解析后的对象:`, versionObj)
+          // 提取content字段作为实际内容
+          const actualContent = versionObj.content || versionString
 
-        // 提取content字段作为实际内容
-        const actualContent = versionObj.content || versionString
-
-        console.log(`版本 ${index} 实际内容:`, actualContent.substring(0, 100) + '...')
-
-        return {
-          content: actualContent,
-          style: '标准' // 默认风格
+          return {
+            content: actualContent,
+            style: '标准' // 默认风格
+          }
+        } catch (error) {
+          // JSON解析失败，静默处理，直接使用原始字符串
+          return {
+            content: versionString,
+            style: '标准'
+          }
         }
-      } catch (error) {
-        // 如果JSON解析失败，直接使用原始字符串
-        console.log(`版本 ${index} JSON解析失败，使用原始字符串:`, error)
+      } else {
+        // 不是JSON格式，直接使用原始字符串
         return {
           content: versionString,
           style: '标准'
@@ -301,11 +301,9 @@ const availableVersions = computed(() => {
       }
     })
 
-    console.log('转换后的版本对象:', convertedVersions)
     return convertedVersions
   }
 
-  console.log('没有可用版本，selectedChapter:', selectedChapter.value)
   return []
 })
 
@@ -408,11 +406,12 @@ const generateChapter = async (chapterNumber: number) => {
     }
 
     await novelStore.generateChapter(chapterNumber)
-    
-    // store 中的 project 已经被更新，所以我们不需要手动修改本地状态
-    // chapterGenerationResult 也不再需要，因为 availableVersions 会从更新后的 project.chapters 中获取数据
-    // showVersionSelector is now a computed property and will update automatically.
-    chapterGenerationResult.value = null 
+
+    // 强制重新加载项目数据，确保UI能看到最新的versions
+    // 直接赋值 currentProject 可能不会触发深层响应式更新
+    await novelStore.loadProject(props.id, true) // silent=true避免加载指示器闪烁
+
+    chapterGenerationResult.value = null
     selectedVersionIndex.value = 0
   } catch (error) {
     console.error('生成章节失败:', error)
@@ -452,13 +451,16 @@ const selectVersion = async (versionIndex: number) => {
     }
 
     selectedVersionIndex.value = versionIndex
+
+    // 立即显示成功消息，提升用户体验（后端会执行耗时的摘要生成和向量库同步）
+    globalAlert.showSuccess('版本已确认，正在生成摘要和同步向量库...', '操作成功')
+
+    // 后台执行耗时操作：选择版本、生成摘要、向量库同步
     await novelStore.selectChapterVersion(selectedChapterNumber.value, versionIndex)
 
     // 状态更新将由 store 自动触发，本地无需手动更新
     // 轮询机制会处理状态变更，成功后会自动隐藏选择器
-    // showVersionSelector.value = false
     chapterGenerationResult.value = null
-    globalAlert.showSuccess('版本已确认', '操作成功')
   } catch (error) {
     console.error('选择章节版本失败:', error)
     // 错误状态下恢复章节状态

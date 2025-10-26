@@ -44,6 +44,10 @@ class LLMService:
         user_id: Optional[int] = None,
         timeout: float = 300.0,
         response_format: Optional[str] = "json_object",
+        max_tokens: Optional[int] = None,
+        skip_usage_tracking: bool = False,
+        skip_daily_limit_check: bool = False,
+        cached_config: Optional[Dict[str, Optional[str]]] = None,
     ) -> str:
         messages = [{"role": "system", "content": system_prompt}, *conversation_history]
         return await self._stream_and_collect(
@@ -52,6 +56,10 @@ class LLMService:
             user_id=user_id,
             timeout=timeout,
             response_format=response_format,
+            max_tokens=max_tokens,
+            skip_usage_tracking=skip_usage_tracking,
+            skip_daily_limit_check=skip_daily_limit_check,
+            cached_config=cached_config,
         )
 
     async def get_summary(
@@ -67,8 +75,7 @@ class LLMService:
             prompt_service = PromptService(self.session)
             system_prompt = await prompt_service.get_prompt("extraction")
         if not system_prompt:
-            logger.error("未配置名为 'extraction' 的摘要提示词，无法生成章节摘要")
-            raise HTTPException(status_code=500, detail="未配置摘要提示词，请联系管理员配置 'extraction' 提示词")
+            raise HTTPException(status_code=500, detail="未配置摘要提示词")
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": chapter_content},
@@ -83,135 +90,214 @@ class LLMService:
         user_id: Optional[int],
         timeout: float,
         response_format: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        max_retries: int = 2,
+        skip_usage_tracking: bool = False,
+        skip_daily_limit_check: bool = False,
+        cached_config: Optional[Dict[str, Optional[str]]] = None,
     ) -> str:
-        config = await self._resolve_llm_config(user_id)
-        client = LLMClient(api_key=config["api_key"], base_url=config.get("base_url"))
+        """流式收集 LLM 响应，支持自动重试网络错误
 
-        chat_messages = [ChatMessage(role=msg["role"], content=msg["content"]) for msg in messages]
+        Args:
+            max_retries: 最大重试次数（默认2次，总共最多3次尝试）
+            skip_usage_tracking: 跳过 API 请求计数（用于并行模式）
+            skip_daily_limit_check: 跳过每日限额检查（用于并行模式）
+            cached_config: 缓存的 LLM 配置（用于并行模式，避免并发数据库查询）
+        """
+        import asyncio
+        task_id = id(asyncio.current_task())
+        logger.info("[Task %s] _stream_and_collect 开始 (cached_config=%s)", task_id, bool(cached_config))
 
-        full_response = ""
-        finish_reason = None
+        # 使用缓存配置或实时查询配置
+        if cached_config:
+            config = cached_config
+            logger.info("[Task %s] 使用缓存配置，跳过数据库查询", task_id)
+        else:
+            logger.info("[Task %s] 开始调用 _resolve_llm_config", task_id)
+            config = await self._resolve_llm_config(user_id, skip_daily_limit_check=skip_daily_limit_check)
+            logger.info("[Task %s] _resolve_llm_config 完成", task_id)
 
-        logger.info(
-            "Streaming LLM response: model=%s user_id=%s messages=%d",
-            config.get("model"),
-            user_id,
-            len(messages),
-        )
+        last_error: Optional[Exception] = None
 
-        try:
-            async for part in client.stream_chat(
-                messages=chat_messages,
-                model=config.get("model"),
-                temperature=temperature,
-                timeout=int(timeout),
-                response_format=response_format,
-            ):
-                if part.get("content"):
-                    full_response += part["content"]
-                if part.get("finish_reason"):
-                    finish_reason = part["finish_reason"]
-        except InternalServerError as exc:
-            detail = "AI 服务内部错误，请稍后重试"
-            response = getattr(exc, "response", None)
-            if response is not None:
-                try:
-                    payload = response.json()
-                    error_data = payload.get("error", {}) if isinstance(payload, dict) else {}
-                    detail = error_data.get("message_zh") or error_data.get("message") or detail
-                except Exception:
+        for attempt in range(max_retries + 1):
+            try:
+                client = LLMClient(api_key=config["api_key"], base_url=config.get("base_url"))
+                chat_messages = [ChatMessage(role=msg["role"], content=msg["content"]) for msg in messages]
+
+                full_response = ""
+                finish_reason = None
+
+                if attempt > 0:
+                    logger.warning(
+                        "Retrying LLM request: attempt=%d/%d model=%s user_id=%s",
+                        attempt + 1,
+                        max_retries + 1,
+                        config.get("model"),
+                        user_id,
+                    )
+                else:
+                    logger.info(
+                        "Streaming LLM response: model=%s user_id=%s messages=%d max_tokens=%s",
+                        config.get("model"),
+                        user_id,
+                        len(messages),
+                        max_tokens,
+                    )
+
+                async for part in client.stream_chat(
+                    messages=chat_messages,
+                    model=config.get("model"),
+                    temperature=temperature,
+                    timeout=int(timeout),
+                    response_format=response_format,
+                    max_tokens=max_tokens,
+                ):
+                    if part.get("content"):
+                        full_response += part["content"]
+                    if part.get("finish_reason"):
+                        finish_reason = part["finish_reason"]
+
+                # 成功完成，跳出重试循环
+                logger.debug(
+                    "LLM response collected: model=%s user_id=%s finish_reason=%s preview=%s",
+                    config.get("model"),
+                    user_id,
+                    finish_reason,
+                    full_response[:500],
+                )
+
+                if finish_reason == "length":
+                    logger.warning(
+                        "LLM response truncated: model=%s user_id=%s",
+                        config.get("model"),
+                        user_id,
+                    )
+                    raise HTTPException(status_code=500, detail="AI 响应被截断，请缩短输入或调整参数")
+
+                if not full_response:
+                    logger.error(
+                        "LLM returned empty response: model=%s user_id=%s",
+                        config.get("model"),
+                        user_id,
+                    )
+                    raise HTTPException(status_code=500, detail="AI 未返回有效内容")
+
+                # 仅在非跳过模式下更新使用量统计（避免并发 session 冲突）
+                if not skip_usage_tracking:
+                    await self.usage_service.increment("api_request_count")
+
+                logger.info(
+                    "LLM response success: model=%s user_id=%s chars=%d attempts=%d",
+                    config.get("model"),
+                    user_id,
+                    len(full_response),
+                    attempt + 1,
+                )
+                return full_response
+
+            except InternalServerError as exc:
+                detail = "AI 服务内部错误，请稍后重试"
+                response = getattr(exc, "response", None)
+                if response is not None:
+                    try:
+                        payload = response.json()
+                        error_data = payload.get("error", {}) if isinstance(payload, dict) else {}
+                        detail = error_data.get("message_zh") or error_data.get("message") or detail
+                    except Exception:
+                        detail = str(exc) or detail
+                else:
                     detail = str(exc) or detail
-            else:
-                detail = str(exc) or detail
-            logger.error(
-                "LLM stream internal error: model=%s user_id=%s detail=%s",
-                config.get("model"),
-                user_id,
-                detail,
-                exc_info=exc,
-            )
-            raise HTTPException(status_code=503, detail=detail)
-        except (httpx.RemoteProtocolError, httpx.ReadTimeout, APIConnectionError, APITimeoutError) as exc:
-            if isinstance(exc, httpx.RemoteProtocolError):
-                detail = "AI 服务连接被意外中断，请稍后重试"
-            elif isinstance(exc, (httpx.ReadTimeout, APITimeoutError)):
-                detail = "AI 服务响应超时，请稍后重试"
-            else:
-                detail = "无法连接到 AI 服务，请稍后重试"
-            logger.error(
-                "LLM stream failed: model=%s user_id=%s detail=%s",
-                config.get("model"),
-                user_id,
-                detail,
-                exc_info=exc,
-            )
-            raise HTTPException(status_code=503, detail=detail) from exc
+                logger.error(
+                    "LLM stream internal error: model=%s user_id=%s attempt=%d/%d detail=%s",
+                    config.get("model"),
+                    user_id,
+                    attempt + 1,
+                    max_retries + 1,
+                    detail,
+                    exc_info=exc,
+                )
+                # 内部错误不重试，直接抛出
+                raise HTTPException(status_code=503, detail=detail)
 
-        logger.debug(
-            "LLM response collected: model=%s user_id=%s finish_reason=%s preview=%s",
-            config.get("model"),
-            user_id,
-            finish_reason,
-            full_response[:500],
-        )
+            except (httpx.RemoteProtocolError, httpx.ReadTimeout, APIConnectionError, APITimeoutError) as exc:
+                last_error = exc
 
-        if finish_reason == "length":
-            logger.warning(
-                "LLM response truncated: model=%s user_id=%s response_length=%d",
-                config.get("model"),
-                user_id,
-                len(full_response),
-            )
+                if isinstance(exc, httpx.RemoteProtocolError):
+                    detail = "AI 服务连接被意外中断"
+                elif isinstance(exc, (httpx.ReadTimeout, APITimeoutError)):
+                    detail = "AI 服务响应超时"
+                else:
+                    detail = "无法连接到 AI 服务"
+
+                logger.error(
+                    "LLM stream failed: model=%s user_id=%s attempt=%d/%d detail=%s",
+                    config.get("model"),
+                    user_id,
+                    attempt + 1,
+                    max_retries + 1,
+                    detail,
+                    exc_info=exc,
+                )
+
+                # 如果还有重试机会，继续重试
+                if attempt < max_retries:
+                    import asyncio
+                    # 指数退避：第1次重试等待2秒，第2次等待4秒
+                    wait_time = 2 ** (attempt + 1)
+                    logger.info("Waiting %d seconds before retry...", wait_time)
+                    await asyncio.sleep(wait_time)
+                    continue
+
+                # 已达到最大重试次数，抛出错误
+                retry_hint = f"（已尝试 {max_retries + 1} 次）"
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"{detail}，请稍后重试 {retry_hint}"
+                ) from exc
+
+        # 理论上不应该到达这里，但为了代码完整性保留
+        if last_error:
             raise HTTPException(
-                status_code=500,
-                detail=f"AI 响应因长度限制被截断（已生成 {len(full_response)} 字符），请缩短输入内容或调整模型参数"
-            )
+                status_code=503,
+                detail="AI 服务连接失败，请检查网络或稍后重试"
+            ) from last_error
 
-        if not full_response:
-            logger.error(
-                "LLM returned empty response: model=%s user_id=%s finish_reason=%s",
-                config.get("model"),
-                user_id,
-                finish_reason,
-            )
-            raise HTTPException(
-                status_code=500,
-                detail=f"AI 未返回有效内容（结束原因: {finish_reason or '未知'}），请稍后重试或联系管理员"
-            )
+        raise HTTPException(status_code=500, detail="未知错误")
 
-        await self.usage_service.increment("api_request_count")
-        logger.info(
-            "LLM response success: model=%s user_id=%s chars=%d",
-            config.get("model"),
-            user_id,
-            len(full_response),
-        )
-        return full_response
+    async def _resolve_llm_config(self, user_id: Optional[int], skip_daily_limit_check: bool = False) -> Dict[str, Optional[str]]:
+        import asyncio
+        task_id = id(asyncio.current_task())
+        logger.info("[Task %s] _resolve_llm_config 开始 (user_id=%s, skip_daily_limit_check=%s)", task_id, user_id, skip_daily_limit_check)
 
-    async def _resolve_llm_config(self, user_id: Optional[int]) -> Dict[str, Optional[str]]:
         if user_id:
-            config = await self.llm_repo.get_by_user(user_id)
+            logger.info("[Task %s] 开始查询用户 LLM 配置: user_id=%s", task_id, user_id)
+            try:
+                config = await self.llm_repo.get_by_user(user_id)
+                logger.info("[Task %s] 用户 LLM 配置查询完成", task_id)
+            except Exception as exc:
+                logger.error("[Task %s] 查询用户 LLM 配置失败: %s", task_id, exc, exc_info=True)
+                raise
+
             if config and config.llm_provider_api_key:
+                logger.info("[Task %s] 使用用户自定义 LLM 配置", task_id)
                 return {
                     "api_key": config.llm_provider_api_key,
                     "base_url": config.llm_provider_url,
                     "model": config.llm_provider_model,
                 }
 
-        # 检查每日使用次数限制
-        if user_id:
+        # 检查每日使用次数限制（仅在非跳过模式下）
+        if user_id and not skip_daily_limit_check:
+            logger.info("[Task %s] 开始执行 daily limit 检查", task_id)
             await self._enforce_daily_limit(user_id)
+            logger.info("[Task %s] daily limit 检查完成", task_id)
 
         api_key = await self._get_config_value("llm.api_key")
         base_url = await self._get_config_value("llm.base_url")
         model = await self._get_config_value("llm.model")
 
         if not api_key:
-            logger.error("未配置默认 LLM API Key，且用户 %s 未设置自定义 API Key", user_id)
-            raise HTTPException(
-                status_code=500,
-                detail="未配置默认 LLM API Key，请联系管理员配置系统默认 API Key 或在个人设置中配置自定义 API Key"
-            )
+            raise HTTPException(status_code=500, detail="未配置默认 LLM API Key")
 
         return {"api_key": api_key, "base_url": base_url, "model": model}
 
@@ -223,33 +309,26 @@ class LLMService:
         model: Optional[str] = None,
     ) -> List[float]:
         """生成文本向量，用于章节 RAG 检索，支持 openai 与 ollama 双提供方。"""
-        provider = await self._get_config_value("embedding.provider") or "openai"
-        default_model = (
-            await self._get_config_value("ollama.embedding_model") or "nomic-embed-text:latest"
-            if provider == "ollama"
-            else await self._get_config_value("embedding.model") or "text-embedding-3-large"
+        provider = settings.embedding_provider
+        target_model = model or (
+            settings.ollama_embedding_model if provider == "ollama" else settings.embedding_model
         )
-        target_model = model or default_model
 
         if provider == "ollama":
             if OllamaAsyncClient is None:
                 logger.error("未安装 ollama 依赖，无法调用本地嵌入模型。")
                 raise HTTPException(status_code=500, detail="缺少 Ollama 依赖，请先安装 ollama 包。")
 
-            base_url = (
-                await self._get_config_value("ollama.embedding_base_url")
-                or await self._get_config_value("embedding.base_url")
-            )
+            base_url_any = settings.ollama_embedding_base_url or settings.embedding_base_url
+            base_url = str(base_url_any) if base_url_any else None
             client = OllamaAsyncClient(host=base_url)
             try:
                 response = await client.embeddings(model=target_model, prompt=text)
             except Exception as exc:  # pragma: no cover - 本地服务调用失败
-                logger.error(
-                    "Ollama 嵌入请求失败: model=%s base_url=%s error=%s",
+                logger.warning(
+                    "Ollama 嵌入请求失败: model=%s error=%s",
                     target_model,
-                    base_url,
                     exc,
-                    exc_info=True,
                 )
                 return []
             embedding: Optional[List[float]]
@@ -264,8 +343,9 @@ class LLMService:
                 embedding = list(embedding)
         else:
             config = await self._resolve_llm_config(user_id)
-            api_key = await self._get_config_value("embedding.api_key") or config["api_key"]
-            base_url = await self._get_config_value("embedding.base_url") or config.get("base_url")
+            api_key = settings.embedding_api_key or config["api_key"]
+            base_url_setting = settings.embedding_base_url or config.get("base_url")
+            base_url = str(base_url_setting) if base_url_setting else None
             client = AsyncOpenAI(api_key=api_key, base_url=base_url)
             try:
                 response = await client.embeddings.create(
@@ -273,13 +353,11 @@ class LLMService:
                     model=target_model,
                 )
             except Exception as exc:  # pragma: no cover - 网络或鉴权失败
-                logger.error(
-                    "OpenAI 嵌入请求失败: model=%s base_url=%s user_id=%s error=%s",
+                logger.warning(
+                    "OpenAI 嵌入请求失败: model=%s user_id=%s error=%s",
                     target_model,
-                    base_url,
                     user_id,
                     exc,
-                    exc_info=True,
                 )
                 return []
             if not response.data:
@@ -291,27 +369,20 @@ class LLMService:
             embedding = list(embedding)
 
         dimension = len(embedding)
-        if not dimension:
-            vector_size_str = await self._get_config_value("embedding.model_vector_size")
-            if vector_size_str:
-                dimension = int(vector_size_str)
+        if not dimension and settings.embedding_model_vector_size:
+            dimension = settings.embedding_model_vector_size
         if dimension:
             self._embedding_dimensions[target_model] = dimension
         return embedding
 
-    async def get_embedding_dimension(self, model: Optional[str] = None) -> Optional[int]:
+    def get_embedding_dimension(self, model: Optional[str] = None) -> Optional[int]:
         """获取嵌入向量维度，优先返回缓存结果，其次读取配置。"""
-        provider = await self._get_config_value("embedding.provider") or "openai"
-        default_model = (
-            await self._get_config_value("ollama.embedding_model") or "nomic-embed-text:latest"
-            if provider == "ollama"
-            else await self._get_config_value("embedding.model") or "text-embedding-3-large"
+        target_model = model or (
+            settings.ollama_embedding_model if settings.embedding_provider == "ollama" else settings.embedding_model
         )
-        target_model = model or default_model
         if target_model in self._embedding_dimensions:
             return self._embedding_dimensions[target_model]
-        vector_size_str = await self._get_config_value("embedding.model_vector_size")
-        return int(vector_size_str) if vector_size_str else None
+        return settings.embedding_model_vector_size
 
     async def _enforce_daily_limit(self, user_id: int) -> None:
         limit_str = await self.admin_setting_service.get("daily_request_limit", "100")

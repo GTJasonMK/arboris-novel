@@ -1,6 +1,8 @@
+import asyncio
 import json
 import logging
 import os
+import time
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -27,12 +29,18 @@ from ...services.chapter_ingest_service import ChapterIngestionService
 from ...services.llm_service import LLMService
 from ...services.novel_service import NovelService
 from ...services.prompt_service import PromptService
+from ...services.usage_service import UsageService
 from ...services.vector_store_service import VectorStoreService
 from ...utils.json_utils import remove_think_tags, unwrap_markdown_json
 from ...repositories.system_config_repository import SystemConfigRepository
 
 router = APIRouter(prefix="/api/writer", tags=["Writer"])
 logger = logging.getLogger(__name__)
+
+# 模块加载测试日志
+logger.info("=" * 80)
+logger.info("writer.py 模块已加载，logger 名称: %s", __name__)
+logger.info("=" * 80)
 
 
 async def _load_project_schema(service: NovelService, project_id: str, user_id: int) -> NovelProjectSchema:
@@ -56,12 +64,29 @@ async def generate_chapter(
     session: AsyncSession = Depends(get_session),
     current_user: UserInDB = Depends(get_current_user),
 ) -> NovelProjectSchema:
+    logger.info("=" * 100)
+    logger.info("!!! 收到章节生成请求 !!!")
+    logger.info("project_id=%s, chapter_number=%s, user_id=%s", project_id, request.chapter_number, current_user.id)
+    logger.info("=" * 100)
+
     novel_service = NovelService(session)
     prompt_service = PromptService(session)
     llm_service = LLMService(session)
 
     project = await novel_service.ensure_project_owner(project_id, current_user.id)
     logger.info("用户 %s 开始为项目 %s 生成第 %s 章", current_user.id, project_id, request.chapter_number)
+
+    # 在并行模式下，提前执行一次 daily limit 检查（避免并发冲突）
+    version_count = await _resolve_version_count(session)
+    if settings.writer_parallel_generation and version_count > 1:
+        # 手动执行一次 daily limit 检查并增量
+        await llm_service._enforce_daily_limit(current_user.id)
+        logger.info(
+            "项目 %s 第 %s 章（并行模式）已完成 daily limit 检查",
+            project_id,
+            request.chapter_number,
+        )
+
     outline = await novel_service.get_outline(project_id, request.chapter_number)
     if not outline:
         logger.warning("项目 %s 未找到第 %s 章纲要，生成流程终止", project_id, request.chapter_number)
@@ -131,8 +156,7 @@ async def generate_chapter(
 
     writer_prompt = await prompt_service.get_prompt("writing")
     if not writer_prompt:
-        logger.error("未配置名为 'writing' 的写作提示词，无法生成章节内容")
-        raise HTTPException(status_code=500, detail="缺少写作提示词，请联系管理员配置 'writing' 提示词")
+        raise HTTPException(status_code=500, detail="缺少写作提示词")
 
     # 初始化向量检索服务，若未配置则自动降级为纯提示词生成
     vector_store: Optional[VectorStoreService]
@@ -194,7 +218,24 @@ async def generate_chapter(
     ]
     prompt_input = "\n\n".join(f"{title}\n{content}" for title, content in prompt_sections if content)
     logger.debug("章节写作提示词：%s\n%s", writer_prompt, prompt_input)
+
+    # 在并行模式下跳过 usage tracking，避免数据库 session 冲突
+    skip_usage_tracking = settings.writer_parallel_generation
+
+    # 在并行模式下，预先获取 LLM 配置并缓存，避免并行任务中的数据库查询导致 autoflush 冲突
+    llm_config: Optional[Dict[str, Optional[str]]] = None
+    if skip_usage_tracking:
+        llm_config = await llm_service._resolve_llm_config(current_user.id, skip_daily_limit_check=True)
+        logger.info(
+            "项目 %s 第 %s 章（并行模式）已缓存 LLM 配置",
+            project_id,
+            request.chapter_number,
+        )
+
     async def _generate_single_version(idx: int) -> Dict:
+        import asyncio
+        task_id = id(asyncio.current_task())
+        logger.info("[Task %s] 开始生成版本 %s", task_id, idx + 1)
         try:
             response = await llm_service.get_llm_response(
                 system_prompt=writer_prompt,
@@ -202,45 +243,165 @@ async def generate_chapter(
                 temperature=0.9,
                 user_id=current_user.id,
                 timeout=600.0,
+                skip_usage_tracking=skip_usage_tracking,
+                skip_daily_limit_check=skip_usage_tracking,
+                cached_config=llm_config,
             )
+            logger.info("[Task %s] 版本 %s LLM 响应获取成功", task_id, idx + 1)
             cleaned = remove_think_tags(response)
             normalized = unwrap_markdown_json(cleaned)
             try:
                 return json.loads(normalized)
-            except json.JSONDecodeError as parse_err:
-                logger.warning(
-                    "项目 %s 第 %s 章第 %s 个版本 JSON 解析失败，将原始内容作为纯文本处理: %s",
-                    project_id,
-                    request.chapter_number,
-                    idx + 1,
-                    parse_err,
-                )
+            except json.JSONDecodeError:
                 return {"content": normalized}
-        except HTTPException:
-            raise
         except Exception as exc:
+            import traceback
+            error_details = traceback.format_exc()
             logger.exception(
-                "项目 %s 生成第 %s 章第 %s 个版本时发生异常: %s",
+                "[Task %s] 项目 %s 生成第 %s 章第 %s 个版本时发生异常\n异常类型: %s\n异常信息: %s\n完整堆栈:\n%s",
+                task_id,
                 project_id,
                 request.chapter_number,
                 idx + 1,
+                type(exc).__name__,
                 exc,
+                error_details,
             )
-            raise HTTPException(
-                status_code=500,
-                detail=f"生成章节第 {idx + 1} 个版本时失败: {str(exc)[:200]}"
-            )
+            # 检查是否是 session flushing 错误
+            if "Session is already flushing" in str(exc) or "already flushing" in str(exc).lower():
+                logger.error(
+                    "[Task %s] !!!!! 检测到 Session flushing 冲突 !!!!!\n"
+                    "当前任务ID: %s\n"
+                    "版本索引: %s\n"
+                    "cached_config 是否存在: %s\n"
+                    "skip_usage_tracking: %s\n"
+                    "完整异常: %s",
+                    task_id,
+                    task_id,
+                    idx,
+                    bool(llm_config),
+                    skip_usage_tracking,
+                    error_details,
+                )
+            return {"content": f"生成失败: {exc}"}
 
     version_count = await _resolve_version_count(session)
     logger.info(
-        "项目 %s 第 %s 章计划生成 %s 个版本",
+        "项目 %s 第 %s 章计划生成 %s 个版本（并行模式：%s）",
         project_id,
         request.chapter_number,
         version_count,
+        settings.writer_parallel_generation,
     )
-    raw_versions = []
-    for idx in range(version_count):
-        raw_versions.append(await _generate_single_version(idx))
+
+    # 并行生成所有版本
+    start_time = time.time()
+
+    if settings.writer_parallel_generation:
+        # 并行模式：使用 Semaphore 控制最大并发数
+        logger.info(
+            "项目 %s 第 %s 章进入并行生成模式\n"
+            "  - 版本数: %s\n"
+            "  - 最大并发数: %s\n"
+            "  - cached_config 是否存在: %s\n"
+            "  - skip_usage_tracking: %s\n"
+            "  - session.autoflush: %s",
+            project_id,
+            request.chapter_number,
+            version_count,
+            settings.writer_max_parallel_requests,
+            bool(llm_config),
+            skip_usage_tracking,
+            session.autoflush,
+        )
+
+        semaphore = asyncio.Semaphore(settings.writer_max_parallel_requests)
+
+        async def _generate_with_semaphore(idx: int) -> Dict:
+            """带并发控制的生成函数"""
+            async with semaphore:
+                logger.info(
+                    "项目 %s 第 %s 章开始生成版本 %s/%s",
+                    project_id,
+                    request.chapter_number,
+                    idx + 1,
+                    version_count,
+                )
+                result = await _generate_single_version(idx)
+                logger.info(
+                    "项目 %s 第 %s 章版本 %s/%s 生成完成",
+                    project_id,
+                    request.chapter_number,
+                    idx + 1,
+                    version_count,
+                )
+                return result
+
+        # 创建所有任务并并行执行
+        # 使用 no_autoflush 禁用自动 flush，避免并发查询时的隐式 flush 冲突
+        logger.info("项目 %s 第 %s 章开始并行执行，进入 no_autoflush 上下文", project_id, request.chapter_number)
+        with session.no_autoflush:
+            logger.info("session.no_autoflush 已启用，session.autoflush=%s", session.autoflush)
+            tasks = [_generate_with_semaphore(idx) for idx in range(version_count)]
+            logger.info("项目 %s 第 %s 章创建了 %s 个并行任务，开始执行 gather", project_id, request.chapter_number, len(tasks))
+            raw_versions = await asyncio.gather(*tasks, return_exceptions=True)
+            logger.info("项目 %s 第 %s 章 gather 执行完成，退出 no_autoflush 上下文", project_id, request.chapter_number)
+
+        # 处理异常结果
+        processed_versions = []
+        for idx, result in enumerate(raw_versions):
+            if isinstance(result, Exception):
+                logger.error(
+                    "项目 %s 第 %s 章版本 %s 生成失败: %s",
+                    project_id,
+                    request.chapter_number,
+                    idx + 1,
+                    result,
+                )
+                processed_versions.append({"content": f"生成失败: {result}"})
+            else:
+                processed_versions.append(result)
+        raw_versions = processed_versions
+    else:
+        # 串行模式（向后兼容）
+        raw_versions = []
+        for idx in range(version_count):
+            logger.info(
+                "项目 %s 第 %s 章开始生成版本 %s/%s（串行模式）",
+                project_id,
+                request.chapter_number,
+                idx + 1,
+                version_count,
+            )
+            raw_versions.append(await _generate_single_version(idx))
+
+    elapsed_time = time.time() - start_time
+    logger.info(
+        "项目 %s 第 %s 章所有版本生成完成，耗时 %.2f 秒（并行模式：%s）",
+        project_id,
+        request.chapter_number,
+        elapsed_time,
+        settings.writer_parallel_generation,
+    )
+
+    # 在并行模式下，统一更新 usage tracking（避免并发冲突）
+    if skip_usage_tracking:
+        # 计算成功生成的版本数
+        successful_count = sum(
+            1 for v in raw_versions
+            if isinstance(v, dict) and not (isinstance(v.get("content"), str) and v.get("content", "").startswith("生成失败:"))
+        )
+        if successful_count > 0:
+            usage_service = UsageService(session)
+            for _ in range(successful_count):
+                await usage_service.increment("api_request_count")
+            logger.info(
+                "项目 %s 第 %s 章更新 API 请求计数：%s 次",
+                project_id,
+                request.chapter_number,
+                successful_count,
+            )
+
     contents: List[str] = []
     metadata: List[Dict] = []
     for variant in raw_versions:
@@ -263,6 +424,8 @@ async def generate_chapter(
         request.chapter_number,
         len(contents),
     )
+    # 清除session缓存，确保返回最新数据（包含刚保存的versions）
+    session.expire_all()
     return await _load_project_schema(novel_service, project_id, current_user.id)
 
 
@@ -350,6 +513,8 @@ async def select_chapter_version(
                 chapter.chapter_number,
             )
 
+    # 清除session缓存，确保返回最新数据
+    session.expire_all()
     return await _load_project_schema(novel_service, project_id, current_user.id)
 
 
@@ -376,7 +541,7 @@ async def evaluate_chapter(
     evaluator_prompt = await prompt_service.get_prompt("evaluation")
     if not evaluator_prompt:
         logger.error("缺少评估提示词，项目 %s 第 %s 章评估失败", project_id, request.chapter_number)
-        raise HTTPException(status_code=500, detail="缺少评估提示词，请联系管理员配置 'evaluation' 提示词")
+        raise HTTPException(status_code=500, detail="缺少评估提示词")
 
     project_schema = await novel_service._serialize_project(project)
     blueprint_dict = project_schema.blueprint.model_dump()
@@ -430,7 +595,7 @@ async def generate_chapter_outline(
     outline_prompt = await prompt_service.get_prompt("outline")
     if not outline_prompt:
         logger.error("缺少大纲提示词，项目 %s 大纲生成失败", project_id)
-        raise HTTPException(status_code=500, detail="缺少大纲提示词，请联系管理员配置 'outline' 提示词")
+        raise HTTPException(status_code=500, detail="缺少大纲提示词")
 
     project_schema = await novel_service.get_project_schema(project_id, current_user.id)
     blueprint_dict = project_schema.blueprint.model_dump()
@@ -454,16 +619,7 @@ async def generate_chapter_outline(
     try:
         data = json.loads(normalized)
     except json.JSONDecodeError as exc:
-        logger.error(
-            "项目 %s 大纲生成 JSON 解析失败: %s, 原始内容预览: %s",
-            project_id,
-            exc,
-            normalized[:500],
-        )
-        raise HTTPException(
-            status_code=500,
-            detail=f"章节大纲生成失败，AI 返回的内容格式不正确: {str(exc)}"
-        ) from exc
+        raise HTTPException(status_code=500, detail="章节大纲生成失败") from exc
 
     new_outlines = data.get("chapters", [])
     for item in new_outlines:
@@ -542,8 +698,8 @@ async def delete_chapters(
     current_user: UserInDB = Depends(get_current_user),
 ) -> NovelProjectSchema:
     if not request.chapter_numbers:
-        logger.warning("项目 %s 删除章节时未提供章节号", project_id)
-        raise HTTPException(status_code=400, detail="请提供要删除的章节号列表")
+        logger.warning("项目 %s 未提供要删除的章节号", project_id)
+        raise HTTPException(status_code=400, detail="请提供要删除的章节号")
     novel_service = NovelService(session)
     llm_service = LLMService(session)
     await novel_service.ensure_project_owner(project_id, current_user.id)
