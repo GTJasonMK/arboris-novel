@@ -134,8 +134,19 @@ const progress = computed(() => {
 })
 
 const getStatusText = computed(() => {
-  const { completed_chapters, total_chapters } = props.project
-  
+  const { completed_chapters, total_chapters, status } = props.project
+
+  // 如果是 draft 状态，说明还在概念对话阶段或蓝图生成阶段
+  if (status === 'draft') {
+    return '灵感模式进行中'
+  }
+
+  // 如果需要生成部分大纲
+  if (status === 'need_part_outlines') {
+    return '需要生成部分大纲'
+  }
+
+  // 如果已有章节完成
   if (completed_chapters > 0) {
     return `已完成 ${completed_chapters}/${total_chapters} 章`
   } else if (total_chapters > 0) {

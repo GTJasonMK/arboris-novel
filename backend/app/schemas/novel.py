@@ -53,6 +53,30 @@ class ChapterOutline(BaseModel):
     summary: str
 
 
+class PartOutlineStatus(str, Enum):
+    """部分大纲生成状态"""
+    PENDING = "pending"
+    GENERATING = "generating"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class PartOutline(BaseModel):
+    """部分大纲（用于长篇小说的分层结构）"""
+    part_number: int
+    title: str
+    start_chapter: int
+    end_chapter: int
+    summary: str
+    theme: str
+    key_events: List[str] = []
+    character_arcs: Dict[str, str] = {}  # 角色名 -> 成长描述
+    conflicts: List[str] = []
+    ending_hook: Optional[str] = None  # 与下一部分的衔接点
+    generation_status: PartOutlineStatus = PartOutlineStatus.PENDING
+    progress: int = 0  # 生成进度 0-100
+
+
 class Chapter(ChapterOutline):
     real_summary: Optional[str] = None
     content: Optional[str] = None
@@ -79,6 +103,10 @@ class Blueprint(BaseModel):
     characters: List[Dict[str, Any]] = []
     relationships: List[Relationship] = []
     chapter_outline: List[ChapterOutline] = []
+    needs_part_outlines: bool = False  # 是否需要分阶段生成（>50章）
+    total_chapters: Optional[int] = None  # 总章节数
+    chapters_per_part: Optional[int] = 25  # 每部分章节数（默认25）
+    part_outlines: List[PartOutline] = []  # 部分大纲列表
 
 
 class NovelProject(BaseModel):
@@ -86,6 +114,7 @@ class NovelProject(BaseModel):
     user_id: int
     title: str
     initial_prompt: str
+    status: str  # 项目状态：draft, blueprint_ready, part_outlines_ready, chapter_outlines_ready 等
     conversation_history: List[Dict[str, Any]] = []
     blueprint: Optional[Blueprint] = None
     chapters: List[Chapter] = []
@@ -101,6 +130,7 @@ class NovelProjectSummary(BaseModel):
     last_edited: str
     completed_chapters: int
     total_chapters: int
+    status: str  # 项目状态：draft, blueprint_ready, part_outlines_ready, chapter_outlines_ready 等
 
 
 class BlueprintGenerationResponse(BaseModel):
@@ -178,3 +208,50 @@ class BlueprintPatch(BaseModel):
 class EditChapterRequest(BaseModel):
     chapter_number: int
     content: str
+
+
+# 部分大纲相关请求和响应模型
+class GeneratePartOutlinesRequest(BaseModel):
+    """生成部分大纲请求"""
+    total_chapters: int = Field(
+        ...,
+        description="小说总章节数",
+        ge=10,
+        le=10000
+    )
+    chapters_per_part: int = Field(
+        default=25,
+        description="每个部分的章节数",
+        ge=10,
+        le=100
+    )
+
+
+class GeneratePartChaptersRequest(BaseModel):
+    """基于部分大纲生成章节请求"""
+    regenerate: bool = Field(
+        default=False,
+        description="是否重新生成（如果章节已存在则覆盖）"
+    )
+
+
+class BatchGenerateChaptersRequest(BaseModel):
+    """批量并发生成章节请求"""
+    part_numbers: Optional[List[int]] = Field(
+        default=None,
+        description="要并发生成的部分编号列表，为空则生成所有"
+    )
+    max_concurrent: int = Field(
+        default=5,
+        description="最大并发数",
+        ge=1,
+        le=10
+    )
+
+
+class PartOutlineGenerationProgress(BaseModel):
+    """部分大纲批量生成进度（整体进度）"""
+    parts: List[PartOutline] = []  # 所有部分的大纲列表
+    total_parts: int = 0  # 总部分数
+    completed_parts: int = 0  # 已完成部分数
+    status: str = "pending"  # 整体状态：pending, partial, completed

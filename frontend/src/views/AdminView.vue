@@ -1,5 +1,6 @@
 <template>
-  <n-layout has-sider class="admin-layout">
+  <n-config-provider>
+    <n-layout has-sider class="admin-layout">
     <n-layout-sider
       collapse-mode="width"
       :collapsed="collapsed"
@@ -56,12 +57,14 @@
       </n-layout-content>
     </n-layout>
   </n-layout>
+  </n-config-provider>
 </template>
 
 <script setup lang="ts">
 import { computed, defineAsyncComponent, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   NButton,
+  NConfigProvider,
   NLayout,
   NLayoutContent,
   NLayoutHeader,
@@ -85,6 +88,7 @@ type MenuKey =
   | 'novels'
   | 'logs'
   | 'settings'
+  | 'llm-config'
   | 'password'
 
 const components: Record<MenuKey, ReturnType<typeof defineAsyncComponent>> = {
@@ -94,6 +98,7 @@ const components: Record<MenuKey, ReturnType<typeof defineAsyncComponent>> = {
   novels: defineAsyncComponent(() => import('../components/admin/NovelManagement.vue')),
   logs: defineAsyncComponent(() => import('../components/admin/UpdateLogManagement.vue')),
   settings: defineAsyncComponent(() => import('../components/admin/SettingsManagement.vue')),
+  'llm-config': defineAsyncComponent(() => import('../components/admin/LLMConfigManagement.vue')),
   password: defineAsyncComponent(() => import('../components/admin/PasswordManagement.vue'))
 }
 
@@ -104,6 +109,7 @@ const iconRenderers: Record<MenuKey, () => any> = {
   novels: () => h('span', { class: 'menu-icon' }, '📚'),
   logs: () => h('span', { class: 'menu-icon' }, '📝'),
   settings: () => h('span', { class: 'menu-icon' }, '⚙️'),
+  'llm-config': () => h('span', { class: 'menu-icon' }, '🤖'),
   password: () => h('span', { class: 'menu-icon' }, '🔒')
 }
 
@@ -114,6 +120,7 @@ const menuOptions: MenuOption[] = [
   { key: 'novels', label: '小说项目', icon: iconRenderers.novels },
   { key: 'logs', label: '更新日志', icon: iconRenderers.logs },
   { key: 'settings', label: '系统配置', icon: iconRenderers.settings },
+  { key: 'llm-config', label: 'LLM 配置', icon: iconRenderers['llm-config'] },
   { key: 'password', label: '安全中心', icon: iconRenderers.password }
 ]
 

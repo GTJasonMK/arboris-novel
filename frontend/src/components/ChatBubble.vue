@@ -2,11 +2,18 @@
   <div :class="wrapperClass">
     <div :class="bubbleClass">
       <!-- AI 消息支持 markdown 渲染 -->
-      <div 
-        v-if="type === 'ai'" 
+      <div
+        v-if="type === 'ai'"
         class="prose prose-sm max-w-none prose-headings:mt-2 prose-headings:mb-1 prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0"
         v-html="renderedMessage"
       ></div>
+      <!-- 错误消息 -->
+      <div v-else-if="type === 'error'" class="flex items-start">
+        <svg class="w-5 h-5 text-red-600 mr-2 mt-0.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+          <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+        </svg>
+        <span>{{ message }}</span>
+      </div>
       <!-- 用户消息保持原样 -->
       <div v-else>{{ message }}</div>
     </div>
@@ -18,7 +25,7 @@ import { computed } from 'vue'
 
 interface Props {
   message: string
-  type: 'user' | 'ai'
+  type: 'user' | 'ai' | 'error'
 }
 
 const props = defineProps<Props>()
@@ -65,12 +72,19 @@ const renderedMessage = computed(() => {
 })
 
 const wrapperClass = computed(() => {
-  return `w-full flex ${props.type === 'ai' ? 'justify-start' : 'justify-end'}`
+  return `w-full flex ${props.type === 'ai' ? 'justify-start' : props.type === 'error' ? 'justify-center' : 'justify-end'}`
 })
 
 const bubbleClass = computed(() => {
   const baseClass = 'max-w-md lg:max-w-lg p-4 rounded-lg shadow-md fade-in'
-  const typeClass = props.type === 'ai' ? 'chat-bubble-ai' : 'chat-bubble-user'
+  let typeClass = ''
+  if (props.type === 'ai') {
+    typeClass = 'chat-bubble-ai'
+  } else if (props.type === 'error') {
+    typeClass = 'bg-red-50 border border-red-200 text-red-800'
+  } else {
+    typeClass = 'chat-bubble-user'
+  }
   return `${baseClass} ${typeClass}`
 })
 </script>

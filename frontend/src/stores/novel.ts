@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import type { NovelProject, NovelProjectSummary, ConverseResponse, BlueprintGenerationResponse, Blueprint, DeleteNovelsResponse, ChapterOutline } from '@/api/novel'
+import type { NovelProject, NovelProjectSummary, ConverseResponse, BlueprintGenerationResponse, Blueprint, DeleteNovelsResponse, ChapterOutline, PartOutlineProgress } from '@/api/novel'
 import { NovelAPI } from '@/api/novel'
 
 export const useNovelStore = defineStore('novel', () => {
@@ -299,6 +299,59 @@ export const useNovelStore = defineStore('novel', () => {
     }
   }
 
+  // 部分大纲相关方法
+  async function generatePartOutlines(totalChapters?: number, chaptersPerPart: number = 25): Promise<PartOutlineProgress> {
+    isLoading.value = true
+    error.value = null
+    try {
+      if (!currentProject.value) {
+        throw new Error('没有当前项目')
+      }
+      // 如果没有提供总章节数，从blueprint中获取
+      const total = totalChapters || currentProject.value.blueprint?.total_chapters
+      if (!total) {
+        throw new Error('未找到总章节数信息')
+      }
+      const progress = await NovelAPI.generatePartOutlines(currentProject.value.id, total, chaptersPerPart)
+      // 重新加载项目以获取最新状态
+      await loadProject(currentProject.value.id, true)
+      return progress
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : '生成部分大纲失败'
+      throw err
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  async function generateSinglePartChapters(partNumber: number, regenerate: boolean = false): Promise<void> {
+    error.value = null
+    try {
+      if (!currentProject.value) {
+        throw new Error('没有当前项目')
+      }
+      await NovelAPI.generateSinglePartChapters(currentProject.value.id, partNumber, regenerate)
+      // 重新加载项目以获取最新状态
+      await loadProject(currentProject.value.id, true)
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : `生成第${partNumber}部分章节大纲失败`
+      throw err
+    }
+  }
+
+  async function getPartOutlinesProgress(): Promise<PartOutlineProgress> {
+    error.value = null
+    try {
+      if (!currentProject.value) {
+        throw new Error('没有当前项目')
+      }
+      return await NovelAPI.getPartOutlinesProgress(currentProject.value.id)
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : '获取部分大纲进度失败'
+      throw err
+    }
+  }
+
   function clearError() {
     error.value = null
   }
@@ -334,6 +387,10 @@ export const useNovelStore = defineStore('novel', () => {
     deleteChapter,
     generateChapterOutline,
     editChapterContent,
+    // 部分大纲相关
+    generatePartOutlines,
+    generateSinglePartChapters,
+    getPartOutlinesProgress,
     clearError,
     setCurrentProject
   }

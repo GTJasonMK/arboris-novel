@@ -73,6 +73,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..core.constants import ProjectStatus
 from ..models import (
     BlueprintCharacter,
     BlueprintRelationship,
@@ -95,6 +96,7 @@ from ..schemas.novel import (
     NovelProjectSummary,
     NovelSectionResponse,
     NovelSectionType,
+    PartOutline as PartOutlineSchema,
 )
 
 
@@ -169,6 +171,7 @@ class NovelService:
                     last_edited=project.updated_at.isoformat() if project.updated_at else "未知",
                     completed_chapters=completed,
                     total_chapters=total,
+                    status=project.status,  # 添加状态字段
                 )
             )
         return summaries
@@ -253,6 +256,9 @@ class NovelService:
         record.one_sentence_summary = blueprint.one_sentence_summary
         record.full_synopsis = blueprint.full_synopsis
         record.world_setting = blueprint.world_setting
+        record.needs_part_outlines = blueprint.needs_part_outlines
+        record.total_chapters = blueprint.total_chapters
+        record.chapters_per_part = blueprint.chapters_per_part
 
         await self.session.execute(delete(BlueprintCharacter).where(BlueprintCharacter.project_id == project_id))
         for index, data in enumerate(blueprint.characters):
@@ -515,6 +521,7 @@ class NovelService:
             user_id=project.user_id,
             title=project.title,
             initial_prompt=project.initial_prompt or "",
+            status=project.status,  # 添加状态字段
             conversation_history=conversations,
             blueprint=blueprint_schema,
             chapters=chapters_schema,
@@ -569,6 +576,26 @@ class NovelService:
                     )
                     for outline in sorted(project.outlines, key=lambda o: o.chapter_number)
                 ],
+                needs_part_outlines=blueprint_obj.needs_part_outlines,
+                total_chapters=blueprint_obj.total_chapters,
+                chapters_per_part=blueprint_obj.chapters_per_part,
+                part_outlines=[
+                    PartOutlineSchema(
+                        part_number=part.part_number,
+                        title=part.title or "",
+                        start_chapter=part.start_chapter,
+                        end_chapter=part.end_chapter,
+                        summary=part.summary or "",
+                        theme=part.theme or "",
+                        key_events=part.key_events or [],
+                        character_arcs=part.character_arcs or {},
+                        conflicts=part.conflicts or [],
+                        ending_hook=part.ending_hook,
+                        generation_status=part.generation_status,
+                        progress=part.progress,
+                    )
+                    for part in sorted(project.part_outlines, key=lambda p: p.part_number)
+                ],
             )
         return Blueprint(
             title="",
@@ -582,6 +609,10 @@ class NovelService:
             characters=[],
             relationships=[],
             chapter_outline=[],
+            needs_part_outlines=False,
+            total_chapters=None,
+            chapters_per_part=25,
+            part_outlines=[],
         )
 
     def _build_section_response(
@@ -603,6 +634,8 @@ class NovelService:
                 "tone": blueprint.tone,
                 "full_synopsis": blueprint.full_synopsis,
                 "updated_at": project.updated_at.isoformat() if project.updated_at else None,
+                "needs_part_outlines": blueprint.needs_part_outlines,  # 添加此字段用于前端判断是否显示章节大纲
+                "total_chapters": blueprint.total_chapters,  # 添加总章节数
             }
         elif section == NovelSectionType.WORLD_SETTING:
             data = {
@@ -619,6 +652,10 @@ class NovelService:
         elif section == NovelSectionType.CHAPTER_OUTLINE:
             data = {
                 "chapter_outline": [outline.model_dump() for outline in blueprint.chapter_outline],
+                "needs_part_outlines": blueprint.needs_part_outlines,
+                "total_chapters": blueprint.total_chapters,
+                "chapters_per_part": blueprint.chapters_per_part,
+                "part_outlines": [part.model_dump() for part in blueprint.part_outlines],
             }
         elif section == NovelSectionType.CHAPTERS:
             outlines_map = {outline.chapter_number: outline for outline in project.outlines}
@@ -698,3 +735,36 @@ class NovelService:
             generation_status=ChapterGenerationStatus(status_value),
             word_count=word_count,
         )
+
+    # ------------------------------------------------------------------
+    # 项目状态管理
+    # ------------------------------------------------------------------
+    async def check_and_update_completion_status(self, project_id: str, user_id: int) -> None:
+        """
+        检查项目是否完成，如果所有章节都已选择版本，更新状态为completed
+
+        Args:
+            project_id: 项目ID
+            user_id: 用户ID（用于权限验证）
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        # 获取项目完整信息
+        project_schema = await self.get_project_schema(project_id, user_id)
+        project = await self.repo.get_project(project_id)
+
+        # 检查蓝图是否存在并且有total_chapters
+        if not project_schema.blueprint or not project_schema.blueprint.total_chapters:
+            return
+
+        total_chapters = project_schema.blueprint.total_chapters
+
+        # 统计已完成的章节数（有选中版本的章节）
+        completed_chapters = sum(1 for ch in project_schema.chapters if ch.selected_version)
+
+        # 如果所有章节都完成了，且当前状态是writing，则更新为completed
+        if completed_chapters == total_chapters and project.status == ProjectStatus.WRITING.value:
+            project.status = ProjectStatus.COMPLETED.value
+            await self.session.commit()
+            logger.info("项目 %s 所有章节完成，状态更新为 %s", project_id, ProjectStatus.COMPLETED.value)

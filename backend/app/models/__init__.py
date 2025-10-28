@@ -1,4 +1,4 @@
-"""集中导出 ORM 模型，确保 SQLAlchemy 元数据在初始化时被正确加载。"""
+"""集中导出 ORM 模型，确保 SQLAlchemy 元数据在初始化时被正��加载。"""
 
 from .admin_setting import AdminSetting
 from .llm_config import LLMConfig
@@ -13,6 +13,7 @@ from .novel import (
     NovelConversation,
     NovelProject,
 )
+from .part_outline import PartOutline
 from .prompt import Prompt
 from .update_log import UpdateLog
 from .usage_metric import UsageMetric
@@ -32,6 +33,7 @@ __all__ = [
     "ChapterVersion",
     "ChapterEvaluation",
     "NovelProject",
+    "PartOutline",
     "Prompt",
     "UpdateLog",
     "UsageMetric",

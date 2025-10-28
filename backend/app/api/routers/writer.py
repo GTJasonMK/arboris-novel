@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...core.config import settings
+from ...core.constants import ProjectStatus
 from ...core.dependencies import get_current_user
 from ...db.session import get_session
 from ...models.novel import Chapter, ChapterOutline
@@ -19,6 +20,10 @@ from ...schemas.novel import (
     EvaluateChapterRequest,
     GenerateChapterRequest,
     GenerateOutlineRequest,
+    GeneratePartOutlinesRequest,
+    GeneratePartChaptersRequest,
+    BatchGenerateChaptersRequest,
+    PartOutlineGenerationProgress,
     NovelProject as NovelProjectSchema,
     SelectVersionRequest,
     UpdateChapterOutlineRequest,
@@ -28,6 +33,7 @@ from ...services.chapter_context_service import ChapterContextService
 from ...services.chapter_ingest_service import ChapterIngestionService
 from ...services.llm_service import LLMService
 from ...services.novel_service import NovelService
+from ...services.part_outline_service import PartOutlineService
 from ...services.prompt_service import PromptService
 from ...services.usage_service import UsageService
 from ...services.vector_store_service import VectorStoreService
@@ -75,6 +81,12 @@ async def generate_chapter(
 
     project = await novel_service.ensure_project_owner(project_id, current_user.id)
     logger.info("用户 %s 开始为项目 %s 生成第 %s 章", current_user.id, project_id, request.chapter_number)
+
+    # 如果项目还未进入写作状态，更新为writing
+    if project.status == ProjectStatus.CHAPTER_OUTLINES_READY.value:
+        project.status = ProjectStatus.WRITING.value
+        await session.commit()
+        logger.info("项目 %s 状态更新为 %s", project_id, ProjectStatus.WRITING.value)
 
     # 在并行模式下，提前执行一次 daily limit 检查（避免并发冲突）
     version_count = await _resolve_version_count(session)
@@ -513,6 +525,9 @@ async def select_chapter_version(
                 chapter.chapter_number,
             )
 
+    # 选择版本后检查是否所有章节都完成了
+    await novel_service.check_and_update_completion_status(project_id, current_user.id)
+
     # 清除session缓存，确保返回最新数据
     session.expire_all()
     return await _load_project_schema(novel_service, project_id, current_user.id)
@@ -789,3 +804,145 @@ async def edit_chapter(
         logger.info("项目 %s 第 %s 章更新内容已同步至向量库", project_id, chapter.chapter_number)
 
     return await novel_service.get_project_schema(project_id, current_user.id)
+
+
+# ------------------------------------------------------------------
+# 部分大纲生成接口（用于长篇小说分层大纲）
+# ------------------------------------------------------------------
+
+
+@router.post("/novels/{project_id}/parts/generate", response_model=PartOutlineGenerationProgress)
+async def generate_part_outlines(
+    project_id: str,
+    request: GeneratePartOutlinesRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> PartOutlineGenerationProgress:
+    """
+    生成部分大纲（大纲的大纲）
+
+    用于长篇小说（51章以上），将整部小说分割成多个部分，
+    每个部分包含若干章节，便于后续分批生成详细章节大纲。
+    """
+    logger.info("用户 %s 请求为项目 %s 生成部分大纲", current_user.id, project_id)
+
+    part_service = PartOutlineService(session)
+
+    return await part_service.generate_part_outlines(
+        project_id=project_id,
+        user_id=current_user.id,
+        total_chapters=request.total_chapters,
+        chapters_per_part=request.chapters_per_part,
+    )
+
+
+@router.post("/novels/{project_id}/parts/{part_number}/chapters", response_model=NovelProjectSchema)
+async def generate_part_chapters(
+    project_id: str,
+    part_number: int,
+    request: GeneratePartChaptersRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> NovelProjectSchema:
+    """
+    为指定部分生成详细的章节大纲
+
+    基于部分大纲的主题、关键事件等信息，
+    生成该部分范围内所有章节的详细大纲。
+    """
+    logger.info("用户 %s 请求为项目 %s 的第 %d 部分生成章节大纲", current_user.id, project_id, part_number)
+
+    part_service = PartOutlineService(session)
+    novel_service = NovelService(session)
+
+    await part_service.generate_part_chapters(
+        project_id=project_id,
+        user_id=current_user.id,
+        part_number=part_number,
+        regenerate=request.regenerate,
+    )
+
+    return await novel_service.get_project_schema(project_id, current_user.id)
+
+
+@router.post("/novels/{project_id}/parts/batch-generate", response_model=PartOutlineGenerationProgress)
+async def batch_generate_part_chapters(
+    project_id: str,
+    request: BatchGenerateChaptersRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> PartOutlineGenerationProgress:
+    """
+    批量并发生成多个部分的章节大纲
+
+    支持并发生成多个部分的章节大纲，提高长篇小说大纲生成效率。
+    可以指定要生成的部分编号列表，或自动生成所有待生成的部分。
+    """
+    logger.info(
+        "用户 %s 请求批量生成项目 %s 的章节大纲，part_numbers=%s",
+        current_user.id,
+        project_id,
+        request.part_numbers,
+    )
+
+    part_service = PartOutlineService(session)
+
+    return await part_service.batch_generate_chapters(
+        project_id=project_id,
+        user_id=current_user.id,
+        part_numbers=request.part_numbers,
+        max_concurrent=request.max_concurrent,
+    )
+
+
+@router.get("/novels/{project_id}/parts/progress", response_model=PartOutlineGenerationProgress)
+async def get_part_outline_progress(
+    project_id: str,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> PartOutlineGenerationProgress:
+    """
+    查询部分大纲生成进度
+
+    用于中断恢复机制，返回所有部分的生成状态。
+    前端可根据状态判断哪些部分需要继续生成。
+    """
+    try:
+        logger.info("用户 %s 查询项目 %s 的部分大纲进度", current_user.id, project_id)
+
+        novel_service = NovelService(session)
+        part_service = PartOutlineService(session)
+
+        # 验证权限
+        await novel_service.ensure_project_owner(project_id, current_user.id)
+
+        # 先清理超时的generating状态（超过15分钟未更新视为超时）
+        logger.info("开始清理超时状态...")
+        cleaned_count = await part_service.cleanup_stale_generating_status(project_id, timeout_minutes=15)
+        if cleaned_count > 0:
+            logger.info("清理了 %d 个超时的generating状态", cleaned_count)
+
+        # 获取所有部分大纲
+        logger.info("获取所有部分大纲...")
+        all_parts = await part_service.repo.get_by_project_id(project_id)
+
+        if not all_parts:
+            raise HTTPException(
+                status_code=404, detail="尚未生成部分大纲，请先调用生成部分大纲接口"
+            )
+
+        completed_count = sum(1 for p in all_parts if p.generation_status == "completed")
+        all_completed = completed_count == len(all_parts)
+
+        logger.info("转换数据为schema...")
+        return PartOutlineGenerationProgress(
+            parts=[part_service._to_schema(p) for p in all_parts],
+            total_parts=len(all_parts),
+            completed_parts=completed_count,
+            status="completed" if all_completed else "partial",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("查询部分大纲进度失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"查询进度失败: {str(exc)}")

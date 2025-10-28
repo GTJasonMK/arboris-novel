@@ -3,7 +3,7 @@ import router from '@/router'
 
 // API 配置
 // 在生产环境中使用相对路径，在开发环境中使用绝对路径
-export const API_BASE_URL = import.meta.env.MODE === 'production' ? '' : 'http://127.0.0.1:8000'
+export const API_BASE_URL = import.meta.env.MODE === 'production' ? '' : 'http://localhost:8000'
 export const API_PREFIX = '/api'
 
 // 统一的请求处理函数
@@ -40,6 +40,7 @@ export interface NovelProject {
   id: string
   title: string
   initial_prompt: string
+  status: string  // 项目状态：draft, blueprint_ready, part_outlines_ready, chapter_outlines_ready 等
   blueprint?: Blueprint
   chapters: Chapter[]
   conversation_history: ConversationMessage[]
@@ -52,6 +53,7 @@ export interface NovelProjectSummary {
   last_edited: string
   completed_chapters: number
   total_chapters: number
+  status: string  // 项目状态：draft, blueprint_ready, part_outlines_ready, chapter_outlines_ready 等
 }
 
 export interface Blueprint {
@@ -66,6 +68,10 @@ export interface Blueprint {
   characters?: Character[]
   relationships?: any[]
   chapter_outline?: ChapterOutline[]
+  needs_part_outlines?: boolean  // 是否需要分阶段生成
+  total_chapters?: number  // 总章节数
+  chapters_per_part?: number  // 每部分章节数
+  part_outlines?: PartOutline[]  // 部分大纲列表
 }
 
 export interface Character {
@@ -82,6 +88,28 @@ export interface ChapterOutline {
   chapter_number: number
   title: string
   summary: string
+}
+
+export interface PartOutline {
+  part_number: number
+  title: string
+  start_chapter: number
+  end_chapter: number
+  summary: string
+  theme: string
+  key_events: string[]
+  character_arcs: Record<string, string>
+  conflicts: string[]
+  ending_hook?: string
+  generation_status: 'pending' | 'generating' | 'completed' | 'failed'
+  progress: number
+}
+
+export interface PartOutlineProgress {
+  parts: PartOutline[]
+  total_parts: number
+  completed_parts: number
+  status: 'pending' | 'in_progress' | 'completed' | 'partial'
 }
 
 export interface ChapterVersion {
@@ -276,6 +304,17 @@ export class NovelAPI {
     })
   }
 
+  // 短篇小说（≤50章）一次性生成全部章节大纲
+  static async generateAllChapterOutlines(projectId: string): Promise<{
+    message: string
+    total_chapters: number
+    status: string
+  }> {
+    return request(`${NOVELS_BASE}/${projectId}/chapter-outlines/generate`, {
+      method: 'POST'
+    })
+  }
+
   static async updateBlueprint(projectId: string, data: Record<string, any>): Promise<NovelProject> {
     return request(`${NOVELS_BASE}/${projectId}/blueprint`, {
       method: 'PATCH',
@@ -293,6 +332,52 @@ export class NovelAPI {
       body: JSON.stringify({
         chapter_number: chapterNumber,
         content: content
+      })
+    })
+  }
+
+  // 部分大纲相关API
+  static async generatePartOutlines(
+    projectId: string,
+    totalChapters: number,
+    chaptersPerPart: number = 25
+  ): Promise<PartOutlineProgress> {
+    return request(`${WRITER_BASE}/${projectId}/parts/generate`, {
+      method: 'POST',
+      body: JSON.stringify({
+        total_chapters: totalChapters,
+        chapters_per_part: chaptersPerPart
+      })
+    })
+  }
+
+  static async generateSinglePartChapters(
+    projectId: string,
+    partNumber: number,
+    regenerate: boolean = false
+  ): Promise<NovelProject> {
+    return request(`${WRITER_BASE}/${projectId}/parts/${partNumber}/chapters`, {
+      method: 'POST',
+      body: JSON.stringify({
+        regenerate: regenerate
+      })
+    })
+  }
+
+  static async getPartOutlinesProgress(projectId: string): Promise<PartOutlineProgress> {
+    return request(`${WRITER_BASE}/${projectId}/parts/progress`)
+  }
+
+  static async batchGeneratePartChapters(
+    projectId: string,
+    partNumbers?: number[],
+    maxConcurrent: number = 3
+  ): Promise<PartOutlineProgress> {
+    return request(`${WRITER_BASE}/${projectId}/parts/batch-generate`, {
+      method: 'POST',
+      body: JSON.stringify({
+        part_numbers: partNumbers,
+        max_concurrent: maxConcurrent
       })
     })
   }

@@ -272,7 +272,8 @@ class LLMService:
         if user_id:
             logger.info("[Task %s] 开始查询用户 LLM 配置: user_id=%s", task_id, user_id)
             try:
-                config = await self.llm_repo.get_by_user(user_id)
+                # 使用激活的配置而不是第一个配置
+                config = await self.llm_repo.get_active_config(user_id)
                 logger.info("[Task %s] 用户 LLM 配置查询完成", task_id)
             except Exception as exc:
                 logger.error("[Task %s] 查询用户 LLM 配置失败: %s", task_id, exc, exc_info=True)

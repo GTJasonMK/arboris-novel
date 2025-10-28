@@ -305,14 +305,30 @@ const novelStore = useNovelStore()
 const projectId = route.params.id as string
 const isSidebarOpen = ref(typeof window !== 'undefined' ? window.innerWidth >= 1024 : true)
 
-const sections: Array<{ key: SectionKey; label: string; description: string }> = [
-  { key: 'overview', label: '项目概览', description: '定位与整体梗概' },
-  { key: 'world_setting', label: '世界设定', description: '规则、地点与阵营' },
-  { key: 'characters', label: '主要角色', description: '人物性格与目标' },
-  { key: 'relationships', label: '人物关系', description: '角色之间的联系' },
-  { key: 'chapter_outline', label: '章节大纲', description: props.isAdmin ? '故事章节规划' : '故事结构规划' },
-  { key: 'chapters', label: '章节内容', description: props.isAdmin ? '生成章节与正文' : '生成状态与摘要' }
-]
+// 动态计算可用的导航项
+const sections = computed<Array<{ key: SectionKey; label: string; description: string }>>(() => {
+  const baseSections = [
+    { key: 'overview' as SectionKey, label: '项目概览', description: '定位与整体梗概' },
+    { key: 'world_setting' as SectionKey, label: '世界设定', description: '规则、地点与阵营' },
+    { key: 'characters' as SectionKey, label: '主要角色', description: '人物性格与目标' },
+    { key: 'relationships' as SectionKey, label: '人物关系', description: '角色之间的联系' }
+  ]
+
+  // 始终显示章节大纲栏，让用户能看到所有功能
+  baseSections.push({
+    key: 'chapter_outline' as SectionKey,
+    label: '章节大纲',
+    description: props.isAdmin ? '故事章节规划' : '故事结构规划'
+  })
+
+  baseSections.push({
+    key: 'chapters' as SectionKey,
+    label: '章节内容',
+    description: props.isAdmin ? '生成章节与正文' : '生成状态与摘要'
+  })
+
+  return baseSections
+})
 
 const sectionComponents: Record<SectionKey, any> = {
   overview: OverviewSection,
@@ -478,11 +494,17 @@ const reloadSection = (section: SectionKey, force = false) => {
   loadSection(section, force)
 }
 
-const switchSection = (section: SectionKey) => {
+const switchSection = async (section: SectionKey) => {
   activeSection.value = section
   if (typeof window !== 'undefined' && window.innerWidth < 1024) {
     isSidebarOpen.value = false
   }
+
+  // 对于章节大纲section，需要完整的项目数据（包含blueprint和part_outlines）
+  if (section === 'chapter_outline' && !props.isAdmin) {
+    await ensureProjectLoaded()
+  }
+
   loadSection(section)
 }
 
@@ -521,7 +543,17 @@ const componentProps = computed(() => {
     case 'relationships':
       return { data: data || null, editable }
     case 'chapter_outline':
-      return { outline: data?.chapter_outline || [], editable }
+      return {
+        outline: data?.chapter_outline || [],
+        editable,
+        blueprint: data ? {
+          needs_part_outlines: data.needs_part_outlines,
+          total_chapters: data.total_chapters,
+          chapters_per_part: data.chapters_per_part,
+          part_outlines: data.part_outlines || []
+        } as any : (novel.value?.blueprint || null),
+        projectId: projectId
+      }
     case 'chapters':
       return { chapters: data?.chapters || [], isAdmin: props.isAdmin }
     default:

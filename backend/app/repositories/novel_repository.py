@@ -20,6 +20,7 @@ class NovelRepository(BaseRepository[NovelProject]):
                 selectinload(NovelProject.relationships_),
                 selectinload(NovelProject.outlines),
                 selectinload(NovelProject.conversations),
+                selectinload(NovelProject.part_outlines),
                 selectinload(NovelProject.chapters).selectinload(Chapter.versions),
                 selectinload(NovelProject.chapters).selectinload(Chapter.evaluations),
                 selectinload(NovelProject.chapters).selectinload(Chapter.selected_version),

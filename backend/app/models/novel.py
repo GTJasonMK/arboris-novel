@@ -3,10 +3,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import JSON, BigInteger, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func, UniqueConstraint
 from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from ..core.constants import ProjectStatus
 from ..db.base import Base
 
 # 自定义列类型：兼容跨数据库环境
@@ -35,7 +36,7 @@ class NovelProject(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     initial_prompt: Mapped[Optional[str]] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(String(32), default="draft")
+    status: Mapped[str] = mapped_column(String(32), default=ProjectStatus.DRAFT.value)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -57,6 +58,9 @@ class NovelProject(Base):
     )
     chapters: Mapped[list["Chapter"]] = relationship(
         back_populates="project", cascade="all, delete-orphan", order_by="Chapter.chapter_number"
+    )
+    part_outlines: Mapped[list["PartOutline"]] = relationship(
+        back_populates="project", cascade="all, delete-orphan", order_by="PartOutline.part_number"
     )
 
 
@@ -93,6 +97,9 @@ class NovelBlueprint(Base):
     one_sentence_summary: Mapped[Optional[str]] = mapped_column(Text)
     full_synopsis: Mapped[Optional[str]] = mapped_column(LONG_TEXT_TYPE)
     world_setting: Mapped[Optional[dict]] = mapped_column(JSON, default=dict)
+    needs_part_outlines: Mapped[bool] = mapped_column(Boolean, default=False)
+    total_chapters: Mapped[Optional[int]] = mapped_column(Integer)
+    chapters_per_part: Mapped[int] = mapped_column(Integer, default=25)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -137,6 +144,9 @@ class ChapterOutline(Base):
     """章节纲要。"""
 
     __tablename__ = "chapter_outlines"
+    __table_args__ = (
+        UniqueConstraint('project_id', 'chapter_number', name='uq_project_chapter'),
+    )
 
     id: Mapped[int] = mapped_column(BIGINT_PK_TYPE, primary_key=True, autoincrement=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("novel_projects.id", ondelete="CASCADE"), nullable=False)

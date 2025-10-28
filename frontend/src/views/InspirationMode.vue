@@ -120,6 +120,7 @@ import { ref, nextTick, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useNovelStore } from '@/stores/novel'
 import type { UIControl, Blueprint } from '@/api/novel'
+import { ProjectStatus } from '@/types/enums'
 import ChatBubble from '@/components/ChatBubble.vue'
 import ConversationInput from '@/components/ConversationInput.vue'
 import BlueprintConfirmation from '@/components/BlueprintConfirmation.vue'
@@ -129,8 +130,11 @@ import { globalAlert } from '@/composables/useAlert'
 
 interface ChatMessage {
   content: string
-  type: 'user' | 'ai'
+  type: 'user' | 'ai' | 'error'
 }
+
+// localStorage 键名常量
+const STORAGE_KEY = 'inspiration_project_id'
 
 const router = useRouter()
 const route = useRoute()
@@ -165,10 +169,13 @@ const resetInspirationMode = () => {
   completedBlueprint.value = null
   confirmationMessage.value = ''
   blueprintMessage.value = ''
-  
+
   // 清空 store 中的当前项目和对话状态
   novelStore.setCurrentProject(null)
   novelStore.currentConversationState = {}
+
+  // 清理 localStorage 中的项目ID
+  localStorage.removeItem(STORAGE_KEY)
 }
 
 const exitConversation = async () => {
@@ -195,10 +202,15 @@ const startConversation = async () => {
   resetInspirationMode()
   conversationStarted.value = true
   isInitialLoading.value = true
-  
+
   try {
     await novelStore.createProject('未命名灵感', '开始灵感模式')
-    
+
+    // 保存项目ID到 localStorage，以便刷新后恢复
+    if (novelStore.currentProject) {
+      localStorage.setItem(STORAGE_KEY, novelStore.currentProject.id)
+    }
+
     // 发起第一次对话
     await handleUserInput(null)
   } catch (error) {
@@ -212,8 +224,38 @@ const restoreConversation = async (projectId: string) => {
   try {
     await novelStore.loadProject(projectId)
     const project = novelStore.currentProject
-    if (project && project.conversation_history) {
+
+    if (!project) {
+      throw new Error('项目不存在')
+    }
+
+    // 关键检查：灵感模式只处理 draft 状态的项目
+    if (project.status !== ProjectStatus.DRAFT) {
+      // 项目已完成灵感阶段，不应该在灵感模式中显示
+      console.warn('项目状态为', project.status, '，已完成灵感阶段，清除缓存')
+      localStorage.removeItem(STORAGE_KEY)  // 清除缓存
+
+      const confirmed = await globalAlert.showConfirm(
+        `项目"${project.title}"已完成灵感对话阶段，是否跳转到详情页查看？`,
+        '跳转确认'
+      )
+
+      if (confirmed) {
+        router.push(`/novel/${projectId}`)
+      } else {
+        // 用户不想跳转，重置灵感模式显示初始界面
+        resetInspirationMode()
+      }
+      return
+    }
+
+    // 只有 status='draft' 的项目才继续恢复对话
+    if (project.conversation_history) {
       conversationStarted.value = true
+
+      // 保存到 localStorage（成功恢复后更新缓存）
+      localStorage.setItem(STORAGE_KEY, projectId)
+
       chatMessages.value = project.conversation_history.map((item): ChatMessage | null => {
         if (item.role === 'user') {
           try {
@@ -232,28 +274,22 @@ const restoreConversation = async (projectId: string) => {
         }
       }).filter((msg): msg is ChatMessage => msg !== null && msg.content !== null) // 过滤掉空的 user message
 
-      // 检查是否已有蓝图
-      if (project.blueprint) {
-        // 已有蓝图，直接显示蓝图展示界面（可以优化）
-        completedBlueprint.value = project.blueprint
-        blueprintMessage.value = '这是您之前生成的蓝图。您可以继续优化或重新生成。'
-        showBlueprint.value = true
-      } else {
-        // 没有蓝图，检查对话状态
-        const lastAssistantMsgStr = project.conversation_history.filter(m => m.role === 'assistant').pop()?.content
-        if (lastAssistantMsgStr) {
-          const lastAssistantMsg = JSON.parse(lastAssistantMsgStr)
+      // status === 'draft'，项目处于灵感对话阶段
+      // 检查对话状态
+      const lastAssistantMsgStr = project.conversation_history.filter(m => m.role === 'assistant').pop()?.content
+      if (lastAssistantMsgStr) {
+        const lastAssistantMsg = JSON.parse(lastAssistantMsgStr)
 
-          if (lastAssistantMsg.is_complete) {
-            // 如果对话已完成，显示蓝图确认界面
-            confirmationMessage.value = lastAssistantMsg.ai_message
-            showBlueprintConfirmation.value = true
-          } else {
-            // 否则，恢复对话
-            currentUIControl.value = lastAssistantMsg.ui_control
-          }
+        if (lastAssistantMsg.is_complete) {
+          // 对话已完成，显示蓝图确认界面
+          confirmationMessage.value = lastAssistantMsg.ai_message
+          showBlueprintConfirmation.value = true
+        } else {
+          // 对话进行中，恢复对话界面
+          currentUIControl.value = lastAssistantMsg.ui_control
         }
       }
+
       // 计算当前轮次
       currentTurn.value = project.conversation_history.filter(m => m.role === 'assistant').length
       await scrollToBottom()
@@ -261,6 +297,8 @@ const restoreConversation = async (projectId: string) => {
   } catch (error) {
     console.error('恢复对话失败:', error)
     globalAlert.showError(`无法恢复对话: ${error instanceof Error ? error.message : '未知错误'}`, '加载失败')
+    // 恢复失败，清理缓存
+    localStorage.removeItem(STORAGE_KEY)
     resetInspirationMode()
   }
 }
@@ -309,9 +347,16 @@ const handleUserInput = async (userInput: any) => {
     if (isInitialLoading.value) {
       isInitialLoading.value = false
     }
-    globalAlert.showError(`抱歉，与AI连接时遇到问题: ${error instanceof Error ? error.message : '未知错误'}`, '通信失败')
-    // 停止加载并返回初始界面
-    resetInspirationMode()
+
+    // 在聊天记录中显示错误消息，允许用户继续对话
+    chatMessages.value.push({
+      content: `抱歉，处理您的消息时遇到问题：${error instanceof Error ? error.message : '未知错误'}。请尝试换一种方式重新表达，或点击下方按钮重试。`,
+      type: 'error'
+    })
+    await scrollToBottom()
+
+    // 保持当前UI控制状态，允许用户重新输入
+    // 不调用 resetInspirationMode()，保留对话历史
   }
 }
 
@@ -331,6 +376,11 @@ const handleBlueprintGenerated = (response: any) => {
   blueprintMessage.value = response.ai_message
   showBlueprintConfirmation.value = false
   showBlueprint.value = true
+
+  // 蓝图生成完成，灵感对话阶段结束，清除localStorage
+  // 项目状态已变为 blueprint_ready，不应该再在灵感模式中恢复
+  localStorage.removeItem(STORAGE_KEY)
+  console.log('蓝图生成完成，已清除灵感模式缓存')
 }
 
 const handleRegenerateBlueprint = () => {
@@ -360,6 +410,10 @@ const handleConfirmBlueprint = async () => {
   }
   try {
     await novelStore.saveBlueprint(completedBlueprint.value)
+
+    // 蓝图保存成功，清理 localStorage（灵感对话已完成）
+    localStorage.removeItem(STORAGE_KEY)
+
     // 跳转到写作工作台
     if (novelStore.currentProject) {
       router.push(`/novel/${novelStore.currentProject.id}`)
@@ -377,13 +431,58 @@ const scrollToBottom = async () => {
   }
 }
 
-onMounted(() => {
+// 查找未完成的项目（灵感模式进行中的项目）
+const findUnfinishedProject = async () => {
+  try {
+    await novelStore.loadProjects()
+    const projects = novelStore.projects
+
+    // 查找符合条件的项目：状态为 draft（灵感模式进行中）
+    const unfinished = projects.find(p => p.status === ProjectStatus.DRAFT)
+
+    return unfinished
+  } catch (error) {
+    console.error('查找未完成项目失败:', error)
+    return null
+  }
+}
+
+onMounted(async () => {
+  // 优先级1：URL参数（最高优先级）
   const projectId = route.query.project_id as string
   if (projectId) {
-    restoreConversation(projectId)
-  } else {
-    // 每次进入灵感模式都重置状态，确保没有缓存
-    resetInspirationMode()
+    await restoreConversation(projectId)
+    return
   }
+
+  // 优先级2：localStorage 缓存
+  const cachedProjectId = localStorage.getItem(STORAGE_KEY)
+  if (cachedProjectId) {
+    try {
+      await restoreConversation(cachedProjectId)
+      return
+    } catch (error) {
+      // 缓存的项目ID失效（可能已删除），清理缓存
+      console.warn('缓存的项目ID失效，已清理:', error)
+      localStorage.removeItem(STORAGE_KEY)
+    }
+  }
+
+  // 优先级3：查找未完成的项目
+  const unfinishedProject = await findUnfinishedProject()
+  if (unfinishedProject) {
+    const confirmed = await globalAlert.showConfirm(
+      `检测到未完成的对话"${unfinishedProject.title}"，是否继续？`,
+      '恢复对话'
+    )
+    if (confirmed) {
+      await restoreConversation(unfinishedProject.id)
+      return
+    }
+  }
+
+  // 如果都没有，重置状态等待用户开始新对话
+  resetInspirationMode()
 })
+
 </script>

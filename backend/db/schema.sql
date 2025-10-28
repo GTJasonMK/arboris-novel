@@ -46,6 +46,9 @@ CREATE TABLE IF NOT EXISTS novel_blueprints (
     one_sentence_summary TEXT NULL,
     full_synopsis LONGTEXT NULL,
     world_setting JSON NULL,
+    needs_part_outlines TINYINT(1) DEFAULT 0,
+    total_chapters INT NULL,
+    chapters_per_part INT DEFAULT 25,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     CONSTRAINT fk_blueprints_project FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE
@@ -128,12 +131,24 @@ CREATE TABLE IF NOT EXISTS chapter_evaluations (
 );
 
 CREATE TABLE IF NOT EXISTS llm_configs (
-    user_id INT PRIMARY KEY,
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id INT NOT NULL,
+    config_name VARCHAR(100) NOT NULL DEFAULT '默认配置',
     llm_provider_url TEXT NULL,
     llm_provider_api_key TEXT NULL,
     llm_provider_model TEXT NULL,
-    CONSTRAINT fk_llm_configs_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-);
+    is_active TINYINT(1) NOT NULL DEFAULT 0,
+    is_verified TINYINT(1) NOT NULL DEFAULT 0,
+    last_test_at TIMESTAMP NULL,
+    test_status VARCHAR(50) NULL COMMENT 'success, failed, pending',
+    test_message TEXT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT fk_llm_configs_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    UNIQUE KEY uq_llm_configs_user_name (user_id, config_name),
+    INDEX idx_llm_configs_user_id (user_id),
+    INDEX idx_llm_configs_is_active (is_active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS prompts (
     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -176,4 +191,27 @@ CREATE TABLE IF NOT EXISTS update_logs (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     created_by VARCHAR(64) NULL,
     is_pinned TINYINT(1) DEFAULT 0
+);
+
+-- 部分大纲表，用于长篇小说的分层大纲管理
+CREATE TABLE IF NOT EXISTS part_outlines (
+    id CHAR(36) PRIMARY KEY,
+    project_id CHAR(36) NOT NULL,
+    part_number INT NOT NULL,
+    title VARCHAR(255) NULL,
+    start_chapter INT NOT NULL,
+    end_chapter INT NOT NULL,
+    summary TEXT NULL,
+    theme VARCHAR(500) NULL,
+    key_events JSON NULL,
+    character_arcs JSON NULL,
+    conflicts JSON NULL,
+    ending_hook TEXT NULL,
+    generation_status VARCHAR(50) DEFAULT 'pending',
+    progress INT DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT fk_part_outlines_project FOREIGN KEY (project_id) REFERENCES novel_projects(id) ON DELETE CASCADE,
+    UNIQUE KEY uq_part_outline_project_number (project_id, part_number),
+    INDEX idx_part_outlines_status (generation_status)
 );

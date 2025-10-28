@@ -9,7 +9,7 @@ def remove_think_tags(raw_text: str) -> str:
 
 
 def unwrap_markdown_json(raw_text: str) -> str:
-    """从 Markdown 或普通文本中提取 JSON 字符串。"""
+    """从 Markdown 或普通文本中提取 JSON 字符串，并替换中文引号。"""
     if not raw_text:
         return raw_text
 
@@ -19,7 +19,7 @@ def unwrap_markdown_json(raw_text: str) -> str:
     if fence_match:
         candidate = fence_match.group(1).strip()
         if candidate:
-            return candidate
+            return normalize_chinese_quotes(candidate)
 
     json_start_candidates = [idx for idx in (trimmed.find("{"), trimmed.find("[")) if idx != -1]
     if json_start_candidates:
@@ -30,9 +30,19 @@ def unwrap_markdown_json(raw_text: str) -> str:
         if end_idx != -1 and end_idx > start_idx:
             candidate = trimmed[start_idx : end_idx + 1].strip()
             if candidate:
-                return candidate
+                return normalize_chinese_quotes(candidate)
 
-    return trimmed
+    return normalize_chinese_quotes(trimmed)
+
+
+def normalize_chinese_quotes(text: str) -> str:
+    """将中文引号（""''）替换为英文引号。"""
+    if not text:
+        return text
+
+    text = text.replace('"', '"').replace('"', '"')
+    text = text.replace(''', "'").replace(''', "'")
+    return text
 
 
 def sanitize_json_like_text(raw_text: str) -> str:

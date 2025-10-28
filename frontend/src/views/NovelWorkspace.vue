@@ -145,6 +145,7 @@ import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNovelStore } from '@/stores/novel'
 import { useAuthStore } from '@/stores/auth'
+import { ProjectStatus } from '@/types/enums'
 import ProjectCard from '@/components/ProjectCard.vue'
 import type { NovelProject, NovelProjectSummary } from '@/api/novel'
 
@@ -171,9 +172,11 @@ const viewProjectDetail = (projectId: string) => {
 }
 
 const enterProject = (project: NovelProjectSummary) => {
-  if (project.title === '未命名灵感') {
+  // 如果项目状态是 draft（尚未完成蓝图生成），跳转到灵感模式继续对话
+  if (project.status === ProjectStatus.DRAFT) {
     router.push(`/inspiration?project_id=${project.id}`)
   } else {
+    // 否则跳转到写作台
     router.push(`/novel/${project.id}`)
   }
 }
