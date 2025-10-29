@@ -199,6 +199,37 @@ class LLMConfigService:
                 model_info=config.llm_provider_model or "默认模型",
             )
 
+        except UnicodeDecodeError as exc:
+            # 特殊处理编码错误：通常意味着 API 返回了非标准响应（错误页面或非 UTF-8 编码）
+            error_message = (
+                "服务器返回了无法解析的响应（编码错误）。"
+                "可能原因：1) API Key 无效 2) 模型名称错误 3) Base URL 不正确。"
+                "请检查配置是否正确，或联系服务提供商确认。"
+            )
+            logger.error(
+                "用户 %s 的配置 %s 测试失败（编码错误）: %s，原始错误: %s",
+                user_id,
+                config.config_name,
+                error_message,
+                str(exc),
+                exc_info=True
+            )
+
+            # 更新配置的测试状态
+            await self.repo.update_fields(
+                config,
+                is_verified=False,
+                test_status="failed",
+                test_message=error_message,
+                last_test_at=datetime.now(timezone.utc),
+            )
+            await self.session.commit()
+
+            return LLMConfigTestResponse(
+                success=False,
+                message=error_message,
+            )
+
         except Exception as exc:
             error_message = str(exc)
             logger.error("用户 %s 的配置 %s 测试失败: %s", user_id, config.config_name, error_message, exc_info=True)
@@ -228,3 +259,170 @@ class LLMConfigService:
         else:
             # 创建新配置
             return await self.create_config(user_id, payload)
+
+    # ------------------------------------------------------------------
+    # 导入导出功能
+    # ------------------------------------------------------------------
+
+    async def export_config(self, config_id: int, user_id: int) -> dict:
+        """
+        导出单个LLM配置为JSON格式。
+
+        Args:
+            config_id: 配置ID
+            user_id: 用户ID（权限验证）
+
+        Returns:
+            包含配置信息的字典
+        """
+        from datetime import datetime, timezone
+        from ..schemas.llm_config import LLMConfigExport, LLMConfigExportData
+
+        config = await self.repo.get_by_id(config_id, user_id)
+        if not config:
+            raise HTTPException(status_code=404, detail="配置不存在或无权访问")
+
+        export_data = LLMConfigExportData(
+            version="1.0",
+            export_time=datetime.now(timezone.utc).isoformat(),
+            export_type="single",
+            configs=[
+                LLMConfigExport(
+                    config_name=config.config_name,
+                    llm_provider_url=config.llm_provider_url,
+                    llm_provider_api_key=config.llm_provider_api_key,
+                    llm_provider_model=config.llm_provider_model,
+                )
+            ],
+        )
+
+        return export_data.model_dump()
+
+    async def export_all_configs(self, user_id: int) -> dict:
+        """
+        导出用户的所有LLM配置为JSON格式。
+
+        Args:
+            user_id: 用户ID
+
+        Returns:
+            包含所有配置的字典
+        """
+        from datetime import datetime, timezone
+        from ..schemas.llm_config import LLMConfigExport, LLMConfigExportData
+
+        configs = await self.repo.list_by_user(user_id)
+        if not configs:
+            raise HTTPException(status_code=404, detail="没有可导出的配置")
+
+        export_data = LLMConfigExportData(
+            version="1.0",
+            export_time=datetime.now(timezone.utc).isoformat(),
+            export_type="batch",
+            configs=[
+                LLMConfigExport(
+                    config_name=config.config_name,
+                    llm_provider_url=config.llm_provider_url,
+                    llm_provider_api_key=config.llm_provider_api_key,
+                    llm_provider_model=config.llm_provider_model,
+                )
+                for config in configs
+            ],
+        )
+
+        return export_data.model_dump()
+
+    async def import_configs(self, user_id: int, import_data: dict) -> dict:
+        """
+        导入LLM配置。
+
+        Args:
+            user_id: 用户ID
+            import_data: 导入的配置数据
+
+        Returns:
+            导入结果统计
+        """
+        from ..schemas.llm_config import LLMConfigExportData, LLMConfigImportResult
+
+        # 验证导入数据格式
+        try:
+            data = LLMConfigExportData(**import_data)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400, detail=f"导入数据格式错误: {str(exc)}"
+            )
+
+        # 检查版本兼容性
+        if data.version != "1.0":
+            raise HTTPException(
+                status_code=400,
+                detail=f"不支持的导出格式版本: {data.version}，当前仅支持 1.0",
+            )
+
+        # 获取用户现有的配置名称
+        existing_configs = await self.repo.list_by_user(user_id)
+        existing_names = {config.config_name for config in existing_configs}
+
+        imported_count = 0
+        skipped_count = 0
+        failed_count = 0
+        details = []
+
+        for config_data in data.configs:
+            try:
+                # 处理重名：如果配置名已存在，添加后缀
+                original_name = config_data.config_name
+                config_name = original_name
+                suffix = 1
+
+                while config_name in existing_names:
+                    config_name = f"{original_name} ({suffix})"
+                    suffix += 1
+
+                if config_name != original_name:
+                    details.append(
+                        f"配置 '{original_name}' 已重命名为 '{config_name}'（避免重名）"
+                    )
+
+                # 创建新配置
+                new_config = LLMConfig(
+                    user_id=user_id,
+                    config_name=config_name,
+                    llm_provider_url=config_data.llm_provider_url,
+                    llm_provider_api_key=config_data.llm_provider_api_key,
+                    llm_provider_model=config_data.llm_provider_model,
+                    is_active=False,  # 导入的配置默认不激活
+                    is_verified=False,  # 需要重新测试
+                )
+
+                await self.repo.add(new_config)
+                existing_names.add(config_name)
+                imported_count += 1
+                details.append(f"成功导入配置 '{config_name}'")
+
+            except Exception as exc:
+                failed_count += 1
+                details.append(
+                    f"导入配置 '{config_data.config_name}' 失败: {str(exc)}"
+                )
+                logger.error(
+                    "导入配置失败: user_id=%s, config_name=%s, error=%s",
+                    user_id,
+                    config_data.config_name,
+                    str(exc),
+                    exc_info=True,
+                )
+
+        # 提交所有更改
+        await self.session.commit()
+
+        return LLMConfigImportResult(
+            success=imported_count > 0,
+            message=f"导入完成：成功 {imported_count} 个，失败 {failed_count} 个",
+            imported_count=imported_count,
+            skipped_count=skipped_count,
+            failed_count=failed_count,
+            details=details,
+        ).model_dump()
+

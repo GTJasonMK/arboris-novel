@@ -1,10 +1,10 @@
 # IDE 配置
 /.vscode
 /frontend/.vscode
-/CLAUDE.md
+
 # Python 虚拟环境
 /backend/.venv
-/docs
+
 # 依赖
 /frontend/node_modules
 /backend/dist

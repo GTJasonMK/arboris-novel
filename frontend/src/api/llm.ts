@@ -222,3 +222,71 @@ export const testLLMConfig = async (configId: number): Promise<LLMConfigTestResp
   }
   return response.json();
 };
+
+// ========== 导入导出功能 ==========
+
+/**
+ * 导出单个LLM配置
+ */
+export const exportLLMConfig = async (configId: number): Promise<void> => {
+  const response = await fetch(`${LLM_BASE}/configs/${configId}/export`, {
+    method: 'GET',
+    headers: getHeaders(),
+  });
+  if (!response.ok) {
+    throw new Error('Failed to export LLM config');
+  }
+
+  // 下载文件
+  const blob = await response.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `llm_config_${configId}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  window.URL.revokeObjectURL(url);
+};
+
+/**
+ * 导出所有LLM配置
+ */
+export const exportAllLLMConfigs = async (): Promise<void> => {
+  const response = await fetch(`${LLM_BASE}/configs/export/all`, {
+    method: 'GET',
+    headers: getHeaders(),
+  });
+  if (!response.ok) {
+    throw new Error('Failed to export all LLM configs');
+  }
+
+  // 下载文件
+  const blob = await response.blob();
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+  a.download = `llm_configs_${timestamp}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  window.URL.revokeObjectURL(url);
+};
+
+/**
+ * 导入LLM配置
+ */
+export const importLLMConfigs = async (data: any): Promise<any> => {
+  const response = await fetch(`${LLM_BASE}/configs/import`, {
+    method: 'POST',
+    headers: getHeaders(),
+    body: JSON.stringify(data),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ detail: 'Failed to import LLM configs' }));
+    throw new Error(error.detail || 'Failed to import LLM configs');
+  }
+  return response.json();
+};
+

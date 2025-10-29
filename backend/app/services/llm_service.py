@@ -121,7 +121,12 @@ class LLMService:
 
         for attempt in range(max_retries + 1):
             try:
-                client = LLMClient(api_key=config["api_key"], base_url=config.get("base_url"))
+                # 使用浏览器头模拟，避免被 Cloudflare 等防护拦截（与测试配置保持一致）
+                client = LLMClient(
+                    api_key=config["api_key"],
+                    base_url=config.get("base_url"),
+                    simulate_browser=True
+                )
                 chat_messages = [ChatMessage(role=msg["role"], content=msg["content"]) for msg in messages]
 
                 full_response = ""

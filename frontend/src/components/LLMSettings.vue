@@ -5,13 +5,37 @@
         <h2 class="text-2xl font-bold text-gray-800">LLM 配置管理</h2>
         <p class="text-sm text-gray-600 mt-1">管理您的 AI 模型配置，支持多个配置切换</p>
       </div>
-      <button
-        @click="openCreateModal"
-        class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
-      >
-        新增配置
-      </button>
+      <div class="flex gap-2">
+        <button
+          @click="triggerImport"
+          class="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+        >
+          导入配置
+        </button>
+        <button
+          v-if="configs.length > 0"
+          @click="exportAll"
+          class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+        >
+          导出所有
+        </button>
+        <button
+          @click="openCreateModal"
+          class="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 transition-colors"
+        >
+          新增配置
+        </button>
+      </div>
     </div>
+
+    <!-- 隐藏的文件上传input -->
+    <input
+      ref="fileInput"
+      type="file"
+      accept=".json"
+      @change="handleFileSelect"
+      class="hidden"
+    />
 
     <!-- 加载状态 -->
     <div v-if="loading" class="text-center py-8">
@@ -97,6 +121,12 @@
             class="px-4 py-2 text-sm bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
           >
             编辑
+          </button>
+          <button
+            @click="handleExport(config)"
+            class="px-4 py-2 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
+          >
+            导出
           </button>
           <button
             @click="handleDelete(config)"
@@ -258,6 +288,9 @@ import {
   activateLLMConfig,
   deleteLLMConfigById,
   testLLMConfig,
+  exportLLMConfig,
+  exportAllLLMConfigs,
+  importLLMConfigs,
   type LLMConfig,
   type LLMConfigCreate,
   type LLMConfigUpdate,
@@ -284,6 +317,9 @@ const formData = reactive<LLMConfigCreate | LLMConfigUpdate>({
 const testResultVisible = ref(false)
 const testResult = ref<LLMConfigTestResponse | null>(null)
 const testingConfigId = ref<number | null>(null)
+
+// 导入导出
+const fileInput = ref<HTMLInputElement | null>(null)
 
 // 加载配置列表
 const fetchConfigs = async () => {
@@ -404,6 +440,64 @@ const handleTest = async (config: LLMConfig) => {
     alert(error.value)
   } finally {
     testingConfigId.value = null
+  }
+}
+
+// 触发导入文件选择
+const triggerImport = () => {
+  fileInput.value?.click()
+}
+
+// 处理文件选择
+const handleFileSelect = async (event: Event) => {
+  const target = event.target as HTMLInputElement
+  const file = target.files?.[0]
+  if (!file) return
+
+  try {
+    const text = await file.text()
+    const data = JSON.parse(text)
+
+    const result = await importLLMConfigs(data)
+
+    if (result.success) {
+      alert(`导入成功！\n${result.message}\n\n详细信息：\n${result.details.join('\n')}`)
+      await fetchConfigs()
+    } else {
+      alert(`导入失败：${result.message}`)
+    }
+
+    // 清空文件选择，允许再次导入相同文件
+    if (target) {
+      target.value = ''
+    }
+  } catch (err: any) {
+    if (err instanceof SyntaxError) {
+      alert('导入失败：文件格式不正确，请选择有效的 JSON 文件')
+    } else {
+      alert(`导入失败：${err.message || '未知错误'}`)
+    }
+    error.value = err.message || '导入失败'
+  }
+}
+
+// 导出所有配置
+const exportAll = async () => {
+  try {
+    await exportAllLLMConfigs()
+  } catch (err: any) {
+    error.value = err.message || '导出失败'
+    alert(error.value)
+  }
+}
+
+// 导出单个配置
+const handleExport = async (config: LLMConfig) => {
+  try {
+    await exportLLMConfig(config.id)
+  } catch (err: any) {
+    error.value = err.message || '导出失败'
+    alert(error.value)
   }
 }
 

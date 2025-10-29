@@ -174,3 +174,61 @@ async def test_llm_config(
     """测试指定ID的LLM配置是否可用。"""
     logger.info("用户 %s 测试 LLM 配置 ID=%s", current_user.id, config_id)
     return await service.test_config(config_id, current_user.id)
+
+
+# ========== 导入导出功能 ==========
+
+
+@router.get("/configs/{config_id}/export")
+async def export_llm_config(
+    config_id: int,
+    service: LLMConfigService = Depends(get_llm_config_service),
+    current_user: UserInDB = Depends(get_current_user),
+):
+    """导出单个LLM配置为JSON文件。"""
+    logger.info("用户 %s 导出 LLM 配置 ID=%s", current_user.id, config_id)
+    export_data = await service.export_config(config_id, current_user.id)
+
+    # 返回JSON文件下载
+    from fastapi.responses import JSONResponse
+    filename = f"llm_config_{config_id}.json"
+    return JSONResponse(
+        content=export_data,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        }
+    )
+
+
+@router.get("/configs/export/all")
+async def export_all_llm_configs(
+    service: LLMConfigService = Depends(get_llm_config_service),
+    current_user: UserInDB = Depends(get_current_user),
+):
+    """导出用户的所有LLM配置为JSON文件。"""
+    logger.info("用户 %s 导出所有 LLM 配置", current_user.id)
+    export_data = await service.export_all_configs(current_user.id)
+
+    # 返回JSON文件下载
+    from fastapi.responses import JSONResponse
+    from datetime import datetime
+    filename = f"llm_configs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    return JSONResponse(
+        content=export_data,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        }
+    )
+
+
+@router.post("/configs/import")
+async def import_llm_configs(
+    import_data: dict,
+    service: LLMConfigService = Depends(get_llm_config_service),
+    current_user: UserInDB = Depends(get_current_user),
+):
+    """导入LLM配置。"""
+    logger.info("用户 %s 导入 LLM 配置", current_user.id)
+    result = await service.import_configs(current_user.id, import_data)
+    return result
+
