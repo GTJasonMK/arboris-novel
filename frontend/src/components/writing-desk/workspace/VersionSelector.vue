@@ -142,7 +142,7 @@
                 <span>{{ version.style || '标准' }}风格</span>
                 <span v-if="isCurrentVersion(index)" class="text-green-600 font-medium">• 当前选中</span>
               </div>
-              <div class="mt-2">
+              <div class="mt-2 flex items-center gap-3">
                 <button
                   @click.stop="$emit('showVersionDetail', index)"
                   class="text-xs text-indigo-600 hover:text-indigo-800 font-medium flex items-center gap-1"
@@ -152,6 +152,15 @@
                     <path fill-rule="evenodd" d="M.458 10C1.732 5.943 5.522 3 10 3s8.268 2.943 9.542 7c-1.274 4.057-5.064 7-9.542 7S1.732 14.057.458 10zM14 10a4 4 0 11-8 0 4 4 0 018 0z" clip-rule="evenodd"></path>
                   </svg>
                   查看详情
+                </button>
+                <button
+                  @click.stop="$emit('retryVersion', index)"
+                  class="text-xs text-orange-600 hover:text-orange-800 font-medium flex items-center gap-1"
+                >
+                  <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                    <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"></path>
+                  </svg>
+                  重新生成
                 </button>
               </div>
             </div>
@@ -203,7 +212,7 @@ interface Props {
 
 const props = defineProps<Props>()
 
-defineEmits(['hideVersionSelector', 'update:selectedVersionIndex', 'showVersionDetail', 'confirmVersionSelection', 'evaluateChapter', 'showEvaluationDetail'])
+defineEmits(['hideVersionSelector', 'update:selectedVersionIndex', 'showVersionDetail', 'confirmVersionSelection', 'evaluateChapter', 'showEvaluationDetail', 'retryVersion'])
 
 
 const isCurrentVersion = (versionIndex: number) => {

@@ -67,10 +67,29 @@ AI 生成的内容不一定第一次就完美，但你可以让它多试几版�
 
 ## 快速开始（真的很快）
 
+### 方式零：一键初始化（推荐新手）
+
+```bash
+# Windows 用户
+quick-start.bat
+
+# Linux/Mac 用户
+chmod +x quick-start.sh
+./quick-start.sh
+
+# 脚本会自动：
+# - 创建配置文件
+# - 生成安全密钥
+# - 引导你输入 API Key
+# - 设置管理员密码
+# 全程不到 1 分钟！
+```
+
 ### 方式一：直接用 Docker 跑起来
 
 ```bash
 # 1. 复制配置文件
+cd deploy
 cp .env.example .env
 
 # 2. 改几个必填项（用你喜欢的编辑器打开 .env）
@@ -87,16 +106,18 @@ docker compose up -d
 ### 方式二：我想用 MySQL
 
 ```bash
-# 在 .env 里改一下 DB_PROVIDER=mysql
+# 在 deploy/.env 里改一下 DB_PROVIDER=mysql
 # 然后用这个命令启动（会自动带上 MySQL 容器）
+cd deploy
 DB_PROVIDER=mysql docker compose --profile mysql up -d
 ```
 
 ### 方式三：我有自己的 MySQL 服务器
 
 ```bash
-# 在 .env 里填好你的数据库地址、用户名、密码
+# 在 deploy/.env 里填好你的数据库地址、用户名、密码
 # 然后正常启动
+cd deploy
 DB_PROVIDER=mysql docker compose up -d
 ```
 
@@ -123,17 +144,20 @@ DB_PROVIDER=mysql docker compose up -d
 
 ## 一些常见问题
 
-**Q: 我不会 Docker 怎么办？**  
+**Q: clone 下来后可以直接运行吗？**
+A: 数据库不需要配置（默认用 SQLite），但需要设置环境变量。最简单的方法是运行 `quick-start.bat`（Windows）或 `./quick-start.sh`（Linux/Mac），脚本会自动帮你完成所有配置。
+
+**Q: 我不会 Docker 怎么办？**
 A: 装一下 Docker Desktop（Windows/Mac）或者 Docker Engine（Linux），然后复制粘贴上面的命令就行。真的不难。
 
-**Q: 我的 API Key 会不会泄露？**  
+**Q: 我的 API Key 会不会泄露？**
 A: 不会。密钥存在服务器的 `.env` 文件里，不会暴露给前端或用户。
 
-**Q: 可以用其它的大模型吗？**  
+**Q: 可以用其它的大模型吗？**
 A: 只要提供 OpenAI 兼容接口，都可以。改一下 `OPENAI_API_BASE_URL` 就行。
 
-**Q: 我改了代码怎么办？**  
-A: 欢迎！提 PR 或者 Issue 都行。。
+**Q: 我改了代码怎么办？**
+A: 欢迎！提 PR 或者 Issue 都行。
 
 ---
 

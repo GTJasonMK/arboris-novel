@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from io import BytesIO
 from datetime import datetime
 
-from ...core.constants import ProjectStatus
+from ...core.state_machine import ProjectStatus
 from ...core.dependencies import get_current_user
 from ...db.session import get_session
 from ...schemas.novel import (
@@ -49,6 +49,12 @@ IMPORTANT: 你的回复必须是合法的 JSON 对象，并严格包含以下字
   "conversation_state": {},
   "is_complete": false
 }
+
+**重要说明：**
+- 在对话进行中，`is_complete` 必须为 `false`
+- 当「内部信息清单」中的所有项目都已完成，准备结束对话时，`is_complete` 必须设置为 `true`
+- 当 `is_complete` 为 `true` 时，用户将看到"生成蓝图"按钮
+
 不要输出额外的文本或解释。
 """
 
@@ -199,6 +205,7 @@ async def converse_with_concept(
 @router.post("/{project_id}/blueprint/generate", response_model=BlueprintGenerationResponse)
 async def generate_blueprint(
     project_id: str,
+    force_regenerate: bool = False,
     session: AsyncSession = Depends(get_session),
     current_user: UserInDB = Depends(get_current_user),
 ) -> BlueprintGenerationResponse:
@@ -210,6 +217,16 @@ async def generate_blueprint(
 
     project = await novel_service.ensure_project_owner(project_id, current_user.id)
     logger.info("项目 %s 开始生成蓝图", project_id)
+
+    # 检查是否已有章节大纲，如果有且未强制重新生成，则返回警告
+    if not force_regenerate:
+        outline_count = await novel_service.count_chapter_outlines(project_id)
+        if outline_count > 0:
+            logger.warning("项目 %s 已有 %d 个章节大纲，需要用户确认是否删除", project_id, outline_count)
+            raise HTTPException(
+                status_code=409,
+                detail=f"项目已有 {outline_count} 个章节大纲，重新生成蓝图将删除所有章节大纲。请确认后重试。"
+            )
 
     history_records = await novel_service.list_conversations(project_id)
     if not history_records:
@@ -333,7 +350,7 @@ async def generate_blueprint(
             logger.info("项目 %s 章节数为 %d，自动设置 needs_part_outlines=False", project_id, default_chapters)
 
     # 新流程：蓝图生成阶段不包含章节大纲，统一设置为 blueprint_ready
-    project.status = ProjectStatus.BLUEPRINT_READY.value
+    await novel_service.transition_project_status(project, ProjectStatus.BLUEPRINT_READY.value)
 
     needs_part_outlines = blueprint.needs_part_outlines
 
@@ -481,8 +498,7 @@ async def generate_chapter_outlines(
         session.add(outline)
 
     # 更新项目状态为章节大纲完成
-    project.status = ProjectStatus.CHAPTER_OUTLINES_READY.value
-    await session.commit()
+    await novel_service.transition_project_status(project, ProjectStatus.CHAPTER_OUTLINES_READY.value)
 
     logger.info("项目 %s 章节大纲生成完成，共 %d 章", project_id, len(chapters_data))
 

@@ -74,7 +74,7 @@
             <button
               v-if="shouldShowRefineBlueprintButton"
               class="px-3 py-2 sm:px-4 text-sm font-medium text-white bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg flex items-center gap-2"
-              @click="goToInspirationMode"
+              @click="goToRefineBlueprintMode"
             >
               <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
                 <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"></path>
@@ -189,14 +189,44 @@
               </div>
 
               <!-- Content -->
-              <component
-                v-else
-                :is="currentComponent"
-                v-bind="componentProps"
-                :class="componentContainerClass"
-                @edit="handleSectionEdit"
-                @add="startAddChapter"
-              />
+              <div v-if="!isSectionLoading && !currentError" class="flex-1 flex flex-col min-h-0 overflow-hidden">
+                <!-- 蓝图查看模式横幅 -->
+                <div v-if="isBlueprintSection && !isAdmin" class="mb-4 bg-gradient-to-r from-indigo-50 to-purple-50 border border-indigo-200 rounded-xl p-4 flex-shrink-0">
+                  <div class="flex items-center justify-between gap-4">
+                    <div class="flex items-center gap-3">
+                      <div class="w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-500 rounded-lg flex items-center justify-center flex-shrink-0">
+                        <svg class="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 20 20">
+                          <path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z"></path>
+                          <path fill-rule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd"></path>
+                        </svg>
+                      </div>
+                      <div>
+                        <h4 class="font-semibold text-indigo-900">蓝图查看模式</h4>
+                        <p class="text-sm text-indigo-700">您可以点击编辑图标修改各个字段，或重新进行灵感对话</p>
+                      </div>
+                    </div>
+                    <button
+                      @click="goToInspirationMode"
+                      class="px-4 py-2 text-sm font-medium text-white bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg flex items-center gap-2 whitespace-nowrap flex-shrink-0"
+                    >
+                      <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"></path>
+                      </svg>
+                      <span class="hidden sm:inline">重新进行灵感对话</span>
+                      <span class="sm:hidden">重新对话</span>
+                    </button>
+                  </div>
+                </div>
+
+                <!-- 实际内容 -->
+                <component
+                  :is="currentComponent"
+                  v-bind="componentProps"
+                  :class="componentContainerClass"
+                  @edit="handleSectionEdit"
+                  @add="startAddChapter"
+                />
+              </div>
             </div>
           </div>
         </div>
@@ -423,11 +453,8 @@ const novel = computed(() => !props.isAdmin ? novelStore.currentProject as Novel
 const shouldShowRefineBlueprintButton = computed(() => {
   if (props.isAdmin || !novel.value) return false
   const project = novel.value
-  // 有蓝图但没有开始创作（章节数为0或所有章节都未生成）
-  const hasBlueprint = !!project.blueprint
-  const hasNoGeneratedChapters = !project.chapters || project.chapters.length === 0 ||
-    project.chapters.every(ch => ch.generation_status === 'not_generated')
-  return hasBlueprint && hasNoGeneratedChapters
+  // 只要有蓝图就显示"重新调整蓝图"按钮，允许用户随时调整
+  return !!project.blueprint
 })
 
 const formattedTitle = computed(() => {
@@ -510,6 +537,11 @@ const switchSection = async (section: SectionKey) => {
 
 const goBack = () => router.push(props.isAdmin ? '/admin' : '/workspace')
 
+const goToRefineBlueprintMode = () => {
+  // 切换到overview section，进入蓝图查看/编辑模式
+  switchSection('overview')
+}
+
 const goToInspirationMode = async () => {
   await ensureProjectLoaded()
   const project = novel.value
@@ -524,6 +556,11 @@ const goToWritingDesk = async () => {
   const path = project.title === '未命名灵感' ? `/inspiration?project_id=${project.id}` : `/novel/${project.id}`
   router.push(path)
 }
+
+const isBlueprintSection = computed(() => {
+  const blueprintSections: SectionKey[] = ['overview', 'world_setting', 'characters', 'relationships']
+  return blueprintSections.includes(activeSection.value)
+})
 
 const currentComponent = computed(() => sectionComponents[activeSection.value])
 const isSectionLoading = computed(() => sectionLoading[activeSection.value])

@@ -7,7 +7,7 @@ from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, I
 from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from ..core.constants import ProjectStatus
+from ..core.state_machine import ProjectStatus
 from ..db.base import Base
 
 # 自定义列类型：兼容跨数据库环境

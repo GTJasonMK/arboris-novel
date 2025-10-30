@@ -59,6 +59,8 @@ class PartOutlineStatus(str, Enum):
     GENERATING = "generating"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLING = "cancelling"
+    CANCELLED = "cancelled"
 
 
 class PartOutline(BaseModel):
@@ -189,6 +191,12 @@ class UpdateChapterOutlineRequest(BaseModel):
 
 class DeleteChapterRequest(BaseModel):
     chapter_numbers: List[int]
+
+
+class RetryVersionRequest(BaseModel):
+    chapter_number: int
+    version_index: int
+    custom_prompt: Optional[str] = Field(default=None, description="用户自定义的优化提示词")
 
 
 class GenerateOutlineRequest(BaseModel):

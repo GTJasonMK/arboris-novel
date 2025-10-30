@@ -73,8 +73,8 @@
           @confirm-version-selection="confirmVersionSelection"
           @generate-chapter="generateChapter"
           @show-evaluation-detail="showEvaluationDetailModal = true"
-          @fetch-chapter-status="fetchChapterStatus"
           @edit-chapter="editChapterContent"
+          @retry-version="retryVersion"
           />
         </div>
       </div>
@@ -483,6 +483,45 @@ const selectVersionFromDetail = async () => {
 
 const confirmVersionSelection = async () => {
   await selectVersion(selectedVersionIndex.value)
+}
+
+const retryVersion = async (versionIndex: number) => {
+  if (selectedChapterNumber.value === null) return
+
+  try {
+    // 询问用户是否需要提供自定义提示词
+    const needsCustomPrompt = await globalAlert.showConfirm(
+      '是否需要提供优化方向？\n\n如果选择"是"，您可以输入具体的优化要求（如"增加动作描写"、"减少对话"等）。\n如果选择"否"，将使用默认设置重新生成。',
+      '重新生成版本'
+    )
+
+    let customPrompt: string | undefined
+
+    if (needsCustomPrompt) {
+      // 使用prompt获取用户输入
+      customPrompt = prompt('请输入优化方向或写作要求：\n\n例如：\n- 增加环境描写\n- 加快节奏\n- 增强情感表达\n- 减少对话，多些内心独白')?.trim()
+
+      // 如果用户取消输入，则退出
+      if (customPrompt === null || customPrompt === undefined) {
+        return
+      }
+    }
+
+    // 开始重试生成
+    await novelStore.retryChapterVersion(
+      selectedChapterNumber.value,
+      versionIndex,
+      customPrompt
+    )
+
+    globalAlert.showSuccess('版本重新生成成功', '生成完成')
+
+    // 重新获取章节状态以更新版本内容
+    await fetchChapterStatus()
+  } catch (error) {
+    console.error('重试版本失败:', error)
+    globalAlert.showError(`重试版本失败: ${error instanceof Error ? error.message : '未知错误'}`, '生成失败')
+  }
 }
 
 const openEditChapterModal = (chapter: ChapterOutline) => {

@@ -73,7 +73,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..core.constants import ProjectStatus
+from ..core.state_machine import ProjectStatus, ProjectStateMachine, InvalidStateTransitionError
 from ..models import (
     BlueprintCharacter,
     BlueprintRelationship,
@@ -106,6 +106,38 @@ class NovelService:
     def __init__(self, session: AsyncSession):
         self.session = session
         self.repo = NovelRepository(session)
+
+    # ------------------------------------------------------------------
+    # 状态机管理
+    # ------------------------------------------------------------------
+    async def transition_project_status(
+        self,
+        project: NovelProject,
+        new_status: str,
+        force: bool = False
+    ) -> None:
+        """
+        安全地转换项目状态
+
+        Args:
+            project: 项目实例
+            new_status: 目标状态
+            force: 是否强制转换（跳过验证）
+
+        Raises:
+            InvalidStateTransitionError: 非法状态转换
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        state_machine = ProjectStateMachine(project.status)
+        project.status = state_machine.transition_to(new_status, force=force)
+        await self.session.commit()
+        logger.info(
+            "项目 %s 状态已转换: %s",
+            project.id,
+            state_machine.get_status_description(new_status)
+        )
 
     # ------------------------------------------------------------------
     # 项目与摘要
@@ -385,6 +417,12 @@ class NovelService:
         )
         result = await self.session.execute(stmt)
         return result.scalars().first()
+
+    async def count_chapter_outlines(self, project_id: str) -> int:
+        """统计项目的章节大纲数量"""
+        stmt = select(func.count(ChapterOutline.chapter_number)).where(ChapterOutline.project_id == project_id)
+        result = await self.session.execute(stmt)
+        return result.scalar_one()
 
     async def get_or_create_chapter(self, project_id: str, chapter_number: int) -> Chapter:
         stmt = (
@@ -765,6 +803,5 @@ class NovelService:
 
         # 如果所有章节都完成了，且当前状态是writing，则更新为completed
         if completed_chapters == total_chapters and project.status == ProjectStatus.WRITING.value:
-            project.status = ProjectStatus.COMPLETED.value
-            await self.session.commit()
+            await self.transition_project_status(project, ProjectStatus.COMPLETED.value)
             logger.info("项目 %s 所有章节完成，状态更新为 %s", project_id, ProjectStatus.COMPLETED.value)

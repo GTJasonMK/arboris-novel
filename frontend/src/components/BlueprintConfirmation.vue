@@ -170,7 +170,10 @@ const timeRemaining = computed(() => {
   return Math.max(0, maxTime - timeElapsed.value)
 })
 
-const generateBlueprint = async () => {
+const generateBlueprint = async (forceRegenerateOrEvent?: boolean | Event) => {
+  // 如果参数是事件对象，则视为正常点击（不强制重新生成）
+  const forceRegenerate = typeof forceRegenerateOrEvent === 'boolean' ? forceRegenerateOrEvent : false
+
   isGenerating.value = true
   progress.value = 0
   timeElapsed.value = 0
@@ -201,7 +204,7 @@ const generateBlueprint = async () => {
   try {
     // 直接调用store中的API
     console.log('开始调用generateBlueprint API...')
-    const response = await novelStore.generateBlueprint()
+    const response = await novelStore.generateBlueprint(forceRegenerate)
     console.log('API调用成功，收到响应:', response)
 
     // API成功后，快速完成进度条到100%
@@ -227,7 +230,22 @@ const generateBlueprint = async () => {
     console.error('生成蓝图失败:', error)
     clearTimers()
     isGenerating.value = false
-    globalAlert.showError(`生成蓝图失败: ${error instanceof Error ? error.message : '未知错误'}`, '生成失败')
+
+    // 检查是否是409冲突错误（已有章节大纲）
+    if ((error as any).status === 409) {
+      const errorMessage = error instanceof Error ? error.message : '项目已有章节大纲'
+      const confirmed = await globalAlert.showConfirm(
+        errorMessage,
+        '确认删除章节大纲'
+      )
+
+      if (confirmed) {
+        // 用户确认，强制重新生成
+        await generateBlueprint(true)
+      }
+    } else {
+      globalAlert.showError(`生成蓝图失败: ${error instanceof Error ? error.message : '未知错误'}`, '生成失败')
+    }
   }
 }
 

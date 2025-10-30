@@ -79,6 +79,8 @@
                 'px-2.5 py-1 text-xs font-medium rounded-full',
                 part.generation_status === 'completed' ? 'bg-green-100 text-green-800' :
                 part.generation_status === 'generating' ? 'bg-blue-100 text-blue-800' :
+                part.generation_status === 'cancelling' ? 'bg-orange-100 text-orange-800' :
+                part.generation_status === 'cancelled' ? 'bg-yellow-100 text-yellow-800' :
                 part.generation_status === 'failed' ? 'bg-red-100 text-red-800' :
                 'bg-slate-100 text-slate-600'
               ]"
@@ -169,18 +171,53 @@ const getStorageKey = () => `part_outline_generating_${props.projectId}`
 const startPolling = () => {
   if (pollingTimer) return
 
+  let pollCount = 0
+  const MAX_POLL_COUNT = 120 // 10分钟超时（120 * 5秒）
+
   pollingTimer = setInterval(async () => {
+    pollCount++
+
+    // 超时检测
+    if (pollCount > MAX_POLL_COUNT) {
+      stopPolling()
+      isGenerating.value = false
+      localStorage.removeItem(getStorageKey())
+      error.value = "生成超时，请刷新页面查看状态或重新生成"
+      console.error('部分大纲生成超时')
+      return
+    }
+
     try {
       await novelStore.loadProject(props.projectId, true) // force reload
 
-      // Check if generation completed
-      if (partOutlines.value.length > 0) {
+      // 检查是否有失败的部分
+      const hasFailed = partOutlines.value.some(p => p.generation_status === 'failed')
+      const hasCompleted = partOutlines.value.some(p => p.generation_status === 'completed')
+
+      // 如果所有部分都失败了，停止轮询
+      if (partOutlines.value.length > 0 && partOutlines.value.every(p => p.generation_status === 'failed')) {
         stopPolling()
         isGenerating.value = false
         localStorage.removeItem(getStorageKey())
+        error.value = "所有部分生成失败，请检查后重试"
+        console.error('所有部分大纲生成失败')
+        return
+      }
+
+      // 检查是否完成（至少有一个completed，且没有generating状态）
+      const hasGenerating = partOutlines.value.some(p => p.generation_status === 'generating')
+      if (hasCompleted && !hasGenerating) {
+        stopPolling()
+        isGenerating.value = false
+        localStorage.removeItem(getStorageKey())
+        
+        if (hasFailed) {
+          error.value = "部分大纲生成完成，但部分失败，请检查失败的部分"
+        }
       }
     } catch (err) {
       console.error('轮询项目状态失败:', err)
+      // 网络错误不立即停止，继续重试
     }
   }, 5000) // Poll every 5 seconds
 }
@@ -235,6 +272,8 @@ const getStatusText = (status: string): string => {
   const statusMap: Record<string, string> = {
     pending: '待生成',
     generating: '生成中',
+    cancelling: '取消中',
+    cancelled: '已取消',
     completed: '已完成',
     failed: '失败'
   }

@@ -64,6 +64,7 @@
           @regenerateChapter="$emit('regenerateChapter')"
           @evaluateChapter="$emit('evaluateChapter')"
           @showEvaluationDetail="$emit('showEvaluationDetail')"
+          @retryVersion="$emit('retryVersion', $event)"
         />
       </div>
     </div>
@@ -132,6 +133,7 @@
 <script setup lang="ts">
 import { computed, ref, watch, onUnmounted } from 'vue'
 import { globalAlert } from '@/composables/useAlert'
+import { useNovelStore } from '@/stores/novel'
 import type { Chapter, ChapterOutline, ChapterGenerationResponse, ChapterVersion, NovelProject } from '@/api/novel'
 import WorkspaceInitial from './workspace/WorkspaceInitial.vue'
 import ChapterGenerating from './workspace/ChapterGenerating.vue'
@@ -139,6 +141,8 @@ import VersionSelector from './workspace/VersionSelector.vue'
 import ChapterContent from './workspace/ChapterContent.vue'
 import ChapterFailed from './workspace/ChapterFailed.vue'
 import ChapterEmpty from './workspace/ChapterEmpty.vue'
+
+const novelStore = useNovelStore()
 
 interface Props {
   project: NovelProject | null
@@ -164,7 +168,7 @@ const emit = defineEmits([
   'generateChapter',
   'showVersionSelector',
   'showEvaluationDetail',
-  'fetchChapterStatus',
+  'retryVersion',
   'editChapter'
 ])
 
@@ -310,11 +314,51 @@ const currentComponent = computed(() => {
 
 // Polling for chapter status updates
 const pollingTimer = ref<number | null>(null)
+const pollingCount = ref(0)
+const consecutiveErrors = ref(0)
+const MAX_POLLING_ATTEMPTS = 60 // 10分钟（60次 * 10秒）
+const MAX_CONSECUTIVE_ERRORS = 5
 
 const startPolling = () => {
   stopPolling()
-  pollingTimer.value = window.setInterval(() => {
-    emit('fetchChapterStatus')
+  pollingCount.value = 0
+  consecutiveErrors.value = 0
+
+  pollingTimer.value = window.setInterval(async () => {
+    if (!props.selectedChapterNumber) {
+      stopPolling()
+      return
+    }
+
+    pollingCount.value++
+
+    // 检查是否超时
+    if (pollingCount.value > MAX_POLLING_ATTEMPTS) {
+      stopPolling()
+      globalAlert.showWarning(
+        '操作超时（已等待10分钟），请刷新页面查看最新状态或检查后台服务是否正常',
+        '超时提醒'
+      )
+      return
+    }
+
+    // 执行轮询
+    try {
+      await novelStore.loadChapter(props.selectedChapterNumber)
+      consecutiveErrors.value = 0 // 成功则重置错误计数
+    } catch (error) {
+      consecutiveErrors.value++
+      console.error('轮询章节状态失败:', error)
+
+      // 检查是否连续错误过多
+      if (consecutiveErrors.value >= MAX_CONSECUTIVE_ERRORS) {
+        stopPolling()
+        globalAlert.showError(
+          '连续多次获取章节状态失败，请检查网络连接或稍后重试',
+          '轮询失败'
+        )
+      }
+    }
   }, 10000)
 }
 
@@ -323,6 +367,8 @@ const stopPolling = () => {
     clearInterval(pollingTimer.value)
     pollingTimer.value = null
   }
+  pollingCount.value = 0
+  consecutiveErrors.value = 0
 }
 
 watch(

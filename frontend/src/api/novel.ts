@@ -29,7 +29,10 @@ const request = async (url: string, options: RequestInit = {}) => {
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}))
-    throw new Error(errorData.detail || `请求失败，状态码: ${response.status}`)
+    const error = new Error(errorData.detail || `请求失败，状态码: ${response.status}`)
+    // 将状态码附加到错误对象上，方便前端判断
+    ;(error as any).status = response.status
+    throw error
   }
 
   return response.json()
@@ -101,7 +104,7 @@ export interface PartOutline {
   character_arcs: Record<string, string>
   conflicts: string[]
   ending_hook?: string
-  generation_status: 'pending' | 'generating' | 'completed' | 'failed'
+  generation_status: 'pending' | 'generating' | 'completed' | 'failed' | 'cancelling' | 'cancelled'
   progress: number
 }
 
@@ -211,8 +214,11 @@ export class NovelAPI {
     })
   }
 
-  static async generateBlueprint(projectId: string): Promise<BlueprintGenerationResponse> {
-    return request(`${NOVELS_BASE}/${projectId}/blueprint/generate`, {
+  static async generateBlueprint(projectId: string, forceRegenerate: boolean = false): Promise<BlueprintGenerationResponse> {
+    const url = forceRegenerate
+      ? `${NOVELS_BASE}/${projectId}/blueprint/generate?force_regenerate=true`
+      : `${NOVELS_BASE}/${projectId}/blueprint/generate`
+    return request(url, {
       method: 'POST'
     })
   }
@@ -255,6 +261,22 @@ export class NovelAPI {
       body: JSON.stringify({
         chapter_number: chapterNumber,
         version_index: versionIndex
+      })
+    })
+  }
+
+  static async retryChapterVersion(
+    projectId: string,
+    chapterNumber: number,
+    versionIndex: number,
+    customPrompt?: string
+  ): Promise<NovelProject> {
+    return request(`${WRITER_BASE}/${projectId}/chapters/retry-version`, {
+      method: 'POST',
+      body: JSON.stringify({
+        chapter_number: chapterNumber,
+        version_index: versionIndex,
+        custom_prompt: customPrompt
       })
     })
   }
@@ -366,6 +388,15 @@ export class NovelAPI {
 
   static async getPartOutlinesProgress(projectId: string): Promise<PartOutlineProgress> {
     return request(`${WRITER_BASE}/${projectId}/parts/progress`)
+  }
+
+  static async cancelPartGeneration(
+    projectId: string,
+    partNumber: number
+  ): Promise<{ success: boolean; message: string; part_number: number }> {
+    return request(`${WRITER_BASE}/${projectId}/parts/${partNumber}/cancel`, {
+      method: 'POST'
+    })
   }
 
   static async batchGeneratePartChapters(

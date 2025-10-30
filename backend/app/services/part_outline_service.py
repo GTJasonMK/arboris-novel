@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..core.constants import ProjectStatus
+from ..core.state_machine import ProjectStatus
 from ..models.part_outline import PartOutline
 from ..models.novel import ChapterOutline, NovelProject
 from ..repositories.part_outline_repository import PartOutlineRepository
@@ -22,8 +22,14 @@ from ..schemas.novel import (
 from ..utils.json_utils import remove_think_tags, unwrap_markdown_json
 from .llm_service import LLMService
 from .prompt_service import PromptService
+from .novel_service import NovelService
 
 logger = logging.getLogger(__name__)
+
+
+class GenerationCancelledException(Exception):
+    """生成被用户取消的异常"""
+    pass
 
 
 class PartOutlineService:
@@ -35,6 +41,71 @@ class PartOutlineService:
         self.novel_repo = NovelRepository(session)
         self.llm_service = LLMService(session)
         self.prompt_service = PromptService(session)
+
+    async def _check_if_cancelled(self, part_outline: PartOutline) -> bool:
+        """
+        检查部分大纲是否被请求取消
+
+        参数：
+            part_outline: 部分大纲对象
+
+        返回：
+            bool: 如果被取消返回True
+
+        抛出：
+            GenerationCancelledException: 如果检测到取消状态
+        """
+        # 刷新对象以获取最新状态
+        await self.session.refresh(part_outline)
+
+        if part_outline.generation_status == "cancelling":
+            logger.info("检测到第 %d 部分被请求取消生成", part_outline.part_number)
+            raise GenerationCancelledException(f"第 {part_outline.part_number} 部分的生成已被取消")
+
+        return False
+
+    async def cancel_part_generation(
+        self,
+        project_id: str,
+        part_number: int,
+        user_id: int,
+    ) -> bool:
+        """
+        取消指定部分的大纲生成
+
+        参数：
+            project_id: 项目ID
+            part_number: 部分编号
+            user_id: 用户ID
+
+        返回：
+            bool: 是否成功设置取消标志
+        """
+        # 验证权限
+        project = await self.novel_repo.get_by_id(project_id)
+        if not project or project.user_id != user_id:
+            raise HTTPException(status_code=404, detail="项目不存在或无权访问")
+
+        # 获取部分大纲
+        part_outline = await self.repo.get_by_part_number(project_id, part_number)
+        if not part_outline:
+            raise HTTPException(status_code=404, detail=f"未找到第 {part_number} 部分的大纲")
+
+        # 只有正在生成的任务才能取消
+        if part_outline.generation_status != "generating":
+            logger.warning(
+                "第 %d 部分当前状态为 %s，无法取消",
+                part_number,
+                part_outline.generation_status,
+            )
+            return False
+
+        # 设置为取消中状态
+        await self.repo.update_status(part_outline, "cancelling", part_outline.progress)
+        await self.session.commit()
+
+        logger.info("第 %d 部分已设置为取消中状态", part_number)
+        return True
 
     async def cleanup_stale_generating_status(
         self,
@@ -197,8 +268,8 @@ class PartOutlineService:
         logger.info("成功生成 %d 个部分大纲", len(part_outlines))
 
         # 更新项目状态为部分大纲完成
-        project.status = ProjectStatus.PART_OUTLINES_READY.value
-        await self.session.commit()
+        novel_service = NovelService(self.session)
+        await novel_service.transition_project_status(project, ProjectStatus.PART_OUTLINES_READY.value)
         logger.info("项目 %s 状态已更新为 %s", project_id, ProjectStatus.PART_OUTLINES_READY.value)
 
         # 返回进度信息
@@ -250,12 +321,18 @@ class PartOutlineService:
         generation_successful = False  # 追踪是否成功完成
 
         try:
+            # 检查是否已被取消
+            await self._check_if_cancelled(part_outline)
+
             # 构建提示词
             system_prompt = await self.prompt_service.get_prompt("screenwriting")
             user_prompt = await self._build_part_chapters_prompt(
                 part_outline=part_outline,
                 project=project,
             )
+
+            # 再次检查取消状态（在LLM调用前）
+            await self._check_if_cancelled(part_outline)
 
             # 调用LLM生成章节大纲
             logger.info(
@@ -272,6 +349,9 @@ class PartOutlineService:
                 response_format="json_object",
                 timeout=300.0,
             )
+
+            # LLM调用完成后检查取消状态
+            await self._check_if_cancelled(part_outline)
 
             # 解析响应
             cleaned = remove_think_tags(response)
@@ -331,6 +411,10 @@ class PartOutlineService:
                 for c in chapters_data
             ]
 
+        except GenerationCancelledException as exc:
+            logger.info("第 %d 部分生成已被用户取消: %s", part_number, exc)
+            # 取消异常不需要重新抛出，让finally块处理状态更新
+
         except Exception as exc:
             logger.error("为第 %d 部分生成章节大纲失败: %s", part_number, exc)
             raise
@@ -338,13 +422,21 @@ class PartOutlineService:
         finally:
             # 确保状态总是会更新，防止永久卡在generating状态
             try:
+                # 再次刷新状态，确保获取最新的generation_status
+                await self.session.refresh(part_outline)
+
                 if generation_successful:
                     await self.repo.update_status(part_outline, "completed", 100)
+                    status_desc = "completed"
+                elif part_outline.generation_status == "cancelling":
+                    await self.repo.update_status(part_outline, "cancelled", part_outline.progress)
+                    status_desc = "cancelled"
                 else:
                     await self.repo.update_status(part_outline, "failed", 0)
+                    status_desc = "failed"
+
                 await self.session.commit()
-                logger.info("第 %d 部分状态已更新: %s", part_number,
-                           "completed" if generation_successful else "failed")
+                logger.info("第 %d 部分状态已更新: %s", part_number, status_desc)
 
                 # 检查是否所有部分都已完成，如果是则更新项目状态
                 if generation_successful:

@@ -3,14 +3,14 @@ import json
 import logging
 import os
 import time
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ...core.config import settings
-from ...core.constants import ProjectStatus
+from ...core.state_machine import ProjectStatus
 from ...core.dependencies import get_current_user
 from ...db.session import get_session
 from ...models.novel import Chapter, ChapterOutline
@@ -25,6 +25,7 @@ from ...schemas.novel import (
     BatchGenerateChaptersRequest,
     PartOutlineGenerationProgress,
     NovelProject as NovelProjectSchema,
+    RetryVersionRequest,
     SelectVersionRequest,
     UpdateChapterOutlineRequest,
 )
@@ -84,8 +85,7 @@ async def generate_chapter(
 
     # 如果项目还未进入写作状态，更新为writing
     if project.status == ProjectStatus.CHAPTER_OUTLINES_READY.value:
-        project.status = ProjectStatus.WRITING.value
-        await session.commit()
+        await novel_service.transition_project_status(project, ProjectStatus.WRITING.value)
         logger.info("项目 %s 状态更新为 %s", project_id, ProjectStatus.WRITING.value)
 
     # 在并行模式下，提前执行一次 daily limit 检查（避免并发冲突）
@@ -122,14 +122,24 @@ async def generate_chapter(
         if existing.selected_version is None or not existing.selected_version.content:
             continue
         if not existing.real_summary:
-            summary = await llm_service.get_summary(
-                existing.selected_version.content,
-                temperature=0.15,
-                user_id=current_user.id,
-                timeout=180.0,
-            )
-            existing.real_summary = remove_think_tags(summary)
-            await session.commit()
+            try:
+                summary = await llm_service.get_summary(
+                    existing.selected_version.content,
+                    temperature=0.15,
+                    user_id=current_user.id,
+                    timeout=180.0,
+                )
+                existing.real_summary = remove_think_tags(summary)
+                await session.commit()
+            except Exception as exc:
+                logger.warning(
+                    "项目 %s 第 %s 章摘要生成失败，将使用空摘要继续: %s",
+                    project_id,
+                    existing.chapter_number,
+                    exc
+                )
+                # 摘要生成失败不影响章节生成，使用空摘要或默认文本
+                existing.real_summary = "摘要生成失败，请稍后手动生成"
         completed_chapters.append(
             {
                 "chapter_number": existing.chapter_number,
@@ -486,15 +496,21 @@ async def select_chapter_version(
         request.chapter_number,
         request.version_index,
     )
+    
+    # 优化：分离版本选择和摘要生成，避免摘要失败导致整个操作失败
     if selected and selected.content:
-        summary = await llm_service.get_summary(
-            selected.content,
-            temperature=0.15,
-            user_id=current_user.id,
-            timeout=180.0,
-        )
-        chapter.real_summary = remove_think_tags(summary)
-        await session.commit()
+        try:
+            summary = await llm_service.get_summary(
+                selected.content,
+                temperature=0.15,
+                user_id=current_user.id,
+                timeout=180.0,
+            )
+            chapter.real_summary = remove_think_tags(summary)
+            await session.commit()
+        except Exception as exc:
+            logger.error("项目 %s 第 %s 章摘要生成失败，但版本选择已保存: %s", project_id, request.chapter_number, exc)
+            # 摘要生成失败不影响版本选择结果，继续处理
 
         # 选定版本后同步向量库，确保后续章节可检索到最新内容
         vector_store: Optional[VectorStoreService]
@@ -529,6 +545,138 @@ async def select_chapter_version(
     await novel_service.check_and_update_completion_status(project_id, current_user.id)
 
     # 清除session缓存，确保返回最新数据
+    session.expire_all()
+    return await _load_project_schema(novel_service, project_id, current_user.id)
+
+
+@router.post("/novels/{project_id}/chapters/retry-version", response_model=NovelProjectSchema)
+async def retry_chapter_version(
+    project_id: str,
+    request: RetryVersionRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> NovelProjectSchema:
+    """重新生成指定章节的某个版本"""
+    logger.info("用户 %s 请求重试项目 %s 第 %s 章的版本 %s", current_user.id, project_id, request.chapter_number, request.version_index)
+
+    novel_service = NovelService(session)
+    prompt_service = PromptService(session)
+    llm_service = LLMService(session)
+
+    project = await novel_service.ensure_project_owner(project_id, current_user.id)
+    chapter = next((ch for ch in project.chapters if ch.chapter_number == request.chapter_number), None)
+    if not chapter or not chapter.versions:
+        raise HTTPException(status_code=404, detail="章节或版本不存在")
+
+    versions = sorted(chapter.versions, key=lambda item: item.created_at)
+    if request.version_index < 0 or request.version_index >= len(versions):
+        raise HTTPException(status_code=400, detail="版本索引无效")
+
+    # 构建生成上下文（复用generate_chapter的逻辑）
+    outline = await novel_service.get_outline(project_id, request.chapter_number)
+    if not outline:
+        raise HTTPException(status_code=404, detail="章节大纲不存在")
+
+    outlines_map = {item.chapter_number: item for item in project.outlines}
+    previous_summary_text = ""
+    previous_tail_excerpt = ""
+    latest_prev_number = -1
+
+    for existing in project.chapters:
+        if existing.chapter_number >= request.chapter_number:
+            continue
+        if existing.selected_version is None or not existing.selected_version.content:
+            continue
+        if existing.chapter_number > latest_prev_number:
+            latest_prev_number = existing.chapter_number
+            previous_summary_text = existing.real_summary or ""
+            previous_tail_excerpt = _extract_tail_excerpt(existing.selected_version.content)
+
+    project_schema = await novel_service._serialize_project(project)
+    blueprint_dict = project_schema.blueprint.model_dump()
+
+    if "relationships" in blueprint_dict and blueprint_dict["relationships"]:
+        for relation in blueprint_dict["relationships"]:
+            if "character_from" in relation:
+                relation["from"] = relation.pop("character_from")
+            if "character_to" in relation:
+                relation["to"] = relation.pop("character_to")
+
+    banned_blueprint_keys = {
+        "chapter_outline", "chapter_summaries", "chapter_details",
+        "chapter_dialogues", "chapter_events", "conversation_history", "character_timelines",
+    }
+    for key in banned_blueprint_keys:
+        blueprint_dict.pop(key, None)
+
+    writer_prompt = await prompt_service.get_prompt("writing")
+    if not writer_prompt:
+        raise HTTPException(status_code=500, detail="缺少写作提示词")
+
+    # RAG检索
+    vector_store = None
+    if settings.vector_store_enabled:
+        try:
+            vector_store = VectorStoreService()
+        except RuntimeError as exc:
+            logger.warning("向量库初始化失败: %s", exc)
+
+    context_service = ChapterContextService(llm_service=llm_service, vector_store=vector_store)
+    outline_title = outline.title or f"第{outline.chapter_number}章"
+    outline_summary = outline.summary or "暂无摘要"
+    query_parts = [outline_title, outline_summary]
+    if request.custom_prompt:
+        query_parts.append(request.custom_prompt)
+    rag_query = "\n".join(query_parts)
+    rag_context = await context_service.retrieve_for_generation(
+        project_id=project_id,
+        query_text=rag_query,
+        user_id=current_user.id,
+    )
+
+    blueprint_text = json.dumps(blueprint_dict, ensure_ascii=False, indent=2)
+    previous_summary_text = previous_summary_text or "暂无可用摘要"
+    previous_tail_excerpt = previous_tail_excerpt or "暂无上一章结尾内容"
+    rag_chunks_text = "\n\n".join(rag_context.chunk_texts()) if rag_context.chunks else "未检索到章节片段"
+    rag_summaries_text = "\n".join(rag_context.summary_lines()) if rag_context.summaries else "未检索到章节摘要"
+
+    # 如果用户提供了自定义提示词，添加到写作要求中
+    writing_notes = request.custom_prompt or "无额外写作指令"
+
+    prompt_sections = [
+        ("[世界蓝图](JSON)", blueprint_text),
+        ("[上一章摘要]", previous_summary_text),
+        ("[上一章结尾]", previous_tail_excerpt),
+        ("[检索到的剧情上下文](Markdown)", rag_chunks_text),
+        ("[检索到的章节摘要]", rag_summaries_text),
+        ("[当前章节目标]", f"标题：{outline_title}\n摘要：{outline_summary}\n写作要求：{writing_notes}"),
+    ]
+    prompt_input = "\n\n".join(f"{title}\n{content}" for title, content in prompt_sections if content)
+
+    # 生成单个版本
+    response = await llm_service.get_llm_response(
+        system_prompt=writer_prompt,
+        conversation_history=[{"role": "user", "content": prompt_input}],
+        temperature=0.9,
+        user_id=current_user.id,
+        timeout=600.0,
+    )
+
+    cleaned = remove_think_tags(response)
+    normalized = unwrap_markdown_json(cleaned)
+    try:
+        result = json.loads(normalized)
+        new_content = result.get("content", normalized)
+    except json.JSONDecodeError:
+        new_content = normalized
+
+    # 替换指定版本的内容
+    target_version = versions[request.version_index]
+    target_version.content = new_content
+    await session.commit()
+
+    logger.info("项目 %s 第 %s 章版本 %s 重试完成", project_id, request.chapter_number, request.version_index)
+
     session.expire_all()
     return await _load_project_schema(novel_service, project_id, current_user.id)
 
@@ -769,14 +917,20 @@ async def edit_chapter(
     chapter.word_count = len(request.content)
     logger.info("用户 %s 更新了项目 %s 第 %s 章内容", current_user.id, project_id, request.chapter_number)
 
+    # 优化：分离内容保存和摘要生成，避免摘要失败导致编辑失败
     if request.content.strip():
-        summary = await llm_service.get_summary(
-            request.content,
-            temperature=0.15,
-            user_id=current_user.id,
-            timeout=180.0,
-        )
-        chapter.real_summary = remove_think_tags(summary)
+        try:
+            summary = await llm_service.get_summary(
+                request.content,
+                temperature=0.15,
+                user_id=current_user.id,
+                timeout=180.0,
+            )
+            chapter.real_summary = remove_think_tags(summary)
+        except Exception as exc:
+            logger.error("项目 %s 第 %s 章编辑后摘要生成失败，但内容已保存: %s", project_id, request.chapter_number, exc)
+            # 摘要生成失败不影响内容保存，继续处理
+            chapter.real_summary = "摘要生成失败，请稍后手动生成"
     await session.commit()
 
     vector_store: Optional[VectorStoreService]
@@ -893,6 +1047,43 @@ async def batch_generate_part_chapters(
         part_numbers=request.part_numbers,
         max_concurrent=request.max_concurrent,
     )
+
+
+@router.post("/novels/{project_id}/parts/{part_number}/cancel")
+async def cancel_part_generation(
+    project_id: str,
+    part_number: int,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    取消指定部分的章节大纲生成
+
+    设置取消标志，正在生成的任务会在下一次检查点停止。
+    只能取消状态为 generating 的部分。
+    """
+    logger.info("用户 %s 请求取消项目 %s 的第 %d 部分生成", current_user.id, project_id, part_number)
+
+    part_service = PartOutlineService(session)
+
+    success = await part_service.cancel_part_generation(
+        project_id=project_id,
+        part_number=part_number,
+        user_id=current_user.id,
+    )
+
+    if success:
+        return {
+            "success": True,
+            "message": f"第 {part_number} 部分的生成正在取消中",
+            "part_number": part_number,
+        }
+    else:
+        return {
+            "success": False,
+            "message": f"第 {part_number} 部分当前无法取消（可能不在生成中）",
+            "part_number": part_number,
+        }
 
 
 @router.get("/novels/{project_id}/parts/progress", response_model=PartOutlineGenerationProgress)

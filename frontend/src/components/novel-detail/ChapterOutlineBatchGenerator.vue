@@ -31,36 +31,49 @@
           所有部分将按顺序逐个生成，确保故事情节的连贯性和质量。
         </p>
         <button
-          :disabled="isGenerating"
+          :disabled="isGenerating || isCancelling"
           @click="startGeneration"
           class="inline-flex items-center gap-2 px-6 py-3 text-sm font-medium text-white bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg shadow-md hover:shadow-lg transition-all duration-200"
         >
-          <svg v-if="!isGenerating" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg v-if="!isGenerating && !isCancelling" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
           </svg>
           <div v-else class="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-          <span>{{ isGenerating ? '生成中...' : (isResume ? '继续生成' : '开始生成') }}</span>
+          <span>{{ isCancelling ? '取消中...' : (isGenerating ? '生成中...' : (isResume ? '继续生成' : '开始生成')) }}</span>
         </button>
         <button
-          v-if="isGenerating"
+          v-if="isGenerating || isCancelling"
+          :disabled="isCancelling"
           @click="stopGeneration"
-          class="ml-3 inline-flex items-center gap-2 px-6 py-3 text-sm font-medium text-slate-600 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg transition-all duration-200"
+          class="ml-3 inline-flex items-center gap-2 px-6 py-3 text-sm font-medium text-slate-600 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg v-if="!isCancelling" class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
           </svg>
-          <span>停止生成</span>
+          <div v-else class="w-5 h-5 border-2 border-slate-600 border-t-transparent rounded-full animate-spin"></div>
+          <span>{{ isCancelling ? '正在取消...' : '停止生成' }}</span>
         </button>
       </div>
     </div>
 
     <!-- 生成中提示 -->
-    <div v-if="isGenerating && currentGeneratingPart !== null" class="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 flex items-start gap-3">
+    <div v-if="isGenerating && currentGeneratingPart !== null && !isCancelling" class="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 flex items-start gap-3">
       <div class="w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin flex-shrink-0 mt-0.5"></div>
       <div class="flex-1">
         <p class="text-sm font-medium text-blue-900">正在生成第 {{ currentGeneratingPart }} 部分的章节大纲...</p>
         <p class="text-xs text-blue-700 mt-1">
           这可能需要 1-2 分钟，请耐心等待
+        </p>
+      </div>
+    </div>
+
+    <!-- 取消中提示 -->
+    <div v-if="isCancelling" class="bg-orange-50 border border-orange-200 rounded-lg px-4 py-3 flex items-start gap-3">
+      <div class="w-5 h-5 border-2 border-orange-600 border-t-transparent rounded-full animate-spin flex-shrink-0 mt-0.5"></div>
+      <div class="flex-1">
+        <p class="text-sm font-medium text-orange-900">正在撤销生成请求...</p>
+        <p class="text-xs text-orange-700 mt-1">
+          后端正在取消当前生成任务，这可能需要等待当前 LLM 请求完成（最多 2 分钟）
         </p>
       </div>
     </div>
@@ -75,7 +88,7 @@
           </span>
           <!-- 批量重试按钮 -->
           <button
-            v-if="failedPartCount > 0 && !isGenerating"
+            v-if="failedPartCount > 0 && !isGenerating && !isCancelling"
             @click="retryAllFailed"
             class="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-orange-700 bg-orange-50 hover:bg-orange-100 border border-orange-200 rounded-lg transition-colors duration-200"
           >
@@ -119,6 +132,8 @@
                 'px-2.5 py-1 text-xs font-medium rounded-full flex items-center gap-1.5',
                 part.generation_status === 'completed' ? 'bg-green-100 text-green-800' :
                 part.generation_status === 'generating' ? 'bg-blue-100 text-blue-800' :
+                part.generation_status === 'cancelling' ? 'bg-orange-100 text-orange-800' :
+                part.generation_status === 'cancelled' ? 'bg-yellow-100 text-yellow-800' :
                 part.generation_status === 'failed' ? 'bg-red-100 text-red-800' :
                 'bg-slate-100 text-slate-600'
               ]"
@@ -136,7 +151,7 @@
 
             <!-- 重试按钮（仅失败时显示） -->
             <button
-              v-if="part.generation_status === 'failed' && !isGenerating"
+              v-if="part.generation_status === 'failed' && !isGenerating && !isCancelling"
               @click="retryPart(part.part_number)"
               class="text-xs text-indigo-600 hover:text-indigo-800 font-medium transition-colors duration-200"
             >
@@ -189,6 +204,7 @@ const props = defineProps<Props>()
 
 const novelStore = useNovelStore()
 const isGenerating = ref(false)
+const isCancelling = ref(false)  // 是否正在取消生成
 const shouldStop = ref(false)
 const error = ref<string | null>(null)
 const currentGeneratingPart = ref<number | null>(null)
@@ -203,7 +219,11 @@ const failedPartCount = computed(() =>
   partOutlines.value.filter(p => p.generation_status === 'failed').length
 )
 const pendingPartCount = computed(() =>
-  partOutlines.value.filter(p => p.generation_status === 'pending' || p.generation_status === 'failed').length
+  partOutlines.value.filter(p =>
+    p.generation_status === 'pending' ||
+    p.generation_status === 'failed' ||
+    p.generation_status === 'cancelled'
+  ).length
 )
 const progressPercentage = computed(() =>
   totalParts.value > 0 ? (completedPartCount.value / totalParts.value) * 100 : 0
@@ -215,7 +235,7 @@ const isResume = computed(() =>
   completedPartCount.value > 0 && pendingPartCount.value > 0
 )
 const showGenerateButton = computed(() =>
-  !allCompleted.value && !isGenerating.value
+  !allCompleted.value  // 只要没有全部完成，就显示按钮区域（包括停止按钮）
 )
 
 onMounted(async () => {
@@ -232,19 +252,36 @@ onMounted(async () => {
 const startGeneration = async () => {
   isGenerating.value = true
   shouldStop.value = false
+  isCancelling.value = false  // 重置取消状态
   error.value = null
 
   try {
-    // 获取所有待生成或失败的部分
+    // 找到第一个未完成的部分（保证连贯性）
+    const firstIncompleteIndex = partOutlines.value.findIndex(
+      p => p.generation_status !== 'completed'
+    )
+
+    if (firstIncompleteIndex === -1) {
+      console.log('所有部分已完成')
+      return
+    }
+
+    // 从第一个未完成的部分开始，收集所有需要生成的部分
+    // 这样可以保证剧情连贯性：不能跳过前面的部分直接生成后面的
     const partsToGenerate = partOutlines.value
-      .filter(p => p.generation_status === 'pending' || p.generation_status === 'failed')
+      .slice(firstIncompleteIndex)  // 从第一个未完成的开始
+      .filter(p =>
+        p.generation_status === 'pending' ||
+        p.generation_status === 'failed' ||
+        p.generation_status === 'cancelled'  // 添加 cancelled 状态
+      )
       .map(p => p.part_number)
 
     if (partsToGenerate.length === 0) {
       return
     }
 
-    console.log(`开始串行生成 ${partsToGenerate.length} 个部分：[${partsToGenerate.join(', ')}]`)
+    console.log(`从第 ${firstIncompleteIndex + 1} 部分开始，串行生成 ${partsToGenerate.length} 个部分：[${partsToGenerate.join(', ')}]`)
 
     // 纯串行生成所有待生成部分
     for (let i = 0; i < partsToGenerate.length; i++) {
@@ -284,8 +321,47 @@ const startGeneration = async () => {
   }
 }
 
-const stopGeneration = () => {
+const stopGeneration = async () => {
+  if (currentGeneratingPart.value === null) {
+    return
+  }
+
+  const cancellingPartNumber = currentGeneratingPart.value
+  isCancelling.value = true
   shouldStop.value = true
+
+  try {
+    // 调用后端API取消当前正在生成的部分
+    const result = await novelStore.cancelPartGeneration(cancellingPartNumber)
+    console.log(`取消第 ${cancellingPartNumber} 部分生成:`, result.message)
+
+    // 轮询检查状态，直到取消完成
+    const maxPolls = 60  // 最多轮询60次（2分钟）
+    let pollCount = 0
+
+    while (pollCount < maxPolls) {
+      await new Promise(resolve => setTimeout(resolve, 2000))  // 每2秒检查一次
+      await novelStore.getPartOutlinesProgress()
+
+      // 查找当前部分的状态
+      const part = partOutlines.value.find(p => p.part_number === cancellingPartNumber)
+      if (part && (part.generation_status === 'cancelled' || part.generation_status === 'failed')) {
+        console.log(`第 ${cancellingPartNumber} 部分已取消完成，状态: ${part.generation_status}`)
+        break
+      }
+
+      pollCount++
+    }
+
+    if (pollCount >= maxPolls) {
+      console.warn(`等待取消超时，停止轮询`)
+    }
+  } catch (err) {
+    console.error(`取消第 ${cancellingPartNumber} 部分失败:`, err)
+    error.value = `取消失败: ${err instanceof Error ? err.message : '未知错误'}`
+  } finally {
+    isCancelling.value = false
+  }
 }
 
 const retryPart = async (partNumber: number) => {
@@ -340,6 +416,8 @@ const getStatusText = (status: string): string => {
   const statusMap: Record<string, string> = {
     pending: '待生成',
     generating: '生成中',
+    cancelling: '取消中',
+    cancelled: '已取消',
     completed: '已完成',
     failed: '失败'
   }

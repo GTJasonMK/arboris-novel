@@ -41,6 +41,18 @@
               <span v-if="currentTurn > 0" class="text-sm font-medium text-gray-500 bg-gray-100 px-2 py-1 rounded-md">
                 第 {{ currentTurn }} 轮
               </span>
+              <!-- 手动生成蓝图按钮（当对话进行到一定轮次时显示） -->
+              <button
+                v-if="currentTurn >= 5 && !showBlueprintConfirmation && !showBlueprint"
+                @click="handleManualGenerateBlueprint"
+                title="已收集足够信息，可直接生成蓝图"
+                class="text-sm font-medium text-white bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 px-3 py-1.5 rounded-lg transition-all duration-200 shadow-sm hover:shadow-md flex items-center gap-1.5"
+              >
+                <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                  <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"></path>
+                </svg>
+                生成蓝图
+              </button>
               <button
                 @click="handleRestart"
                 title="重新开始"
@@ -231,21 +243,26 @@ const restoreConversation = async (projectId: string) => {
 
     // 关键检查：灵感模式只处理 draft 状态的项目
     if (project.status !== ProjectStatus.DRAFT) {
-      // 项目已完成灵感阶段，不应该在灵感模式中显示
-      console.warn('项目状态为', project.status, '，已完成灵感阶段，清除缓存')
+      // 项目已完成灵感阶段，用户想重新调整蓝图
+      console.warn('项目状态为', project.status, '，用户尝试重新调整蓝图')
       localStorage.removeItem(STORAGE_KEY)  // 清除缓存
 
-      const confirmed = await globalAlert.showConfirm(
-        `项目"${project.title}"已完成灵感对话阶段，是否跳转到详情页查看？`,
-        '跳转确认'
-      )
+      // 根据项目是否有章节给出不同的警告
+      const hasChapters = project.chapters && project.chapters.length > 0
+      const warningMessage = hasChapters
+        ? `项目"${project.title}"已有 ${project.chapters.length} 个章节。\n\n重新调整蓝图后，您可能需要重新生成章节大纲，现有章节内容可能与新蓝图不匹配。\n\n是否从头开始重新对话？\n\n• 选择"确定"：清空对话历史，从头开始\n• 选择"取消"：返回项目详情页`
+        : `项目"${project.title}"已完成灵感阶段。\n\n是否从头开始重新对话？\n\n• 选择"确定"：清空对话历史，从头开始\n• 选择"取消"：返回项目详情页`
 
-      if (confirmed) {
+      const confirmed = await globalAlert.showConfirm(warningMessage, '重新调整蓝图')
+
+      if (!confirmed) {
         router.push(`/novel/${projectId}`)
-      } else {
-        // 用户不想跳转，重置灵感模式显示初始界面
-        resetInspirationMode()
+        return
       }
+
+      // 用户确认，重置状态，从头开始新对话
+      resetInspirationMode()
+      // 重置后直接返回，用户会看到初始界面，可以开始新对话
       return
     }
 
@@ -357,6 +374,19 @@ const handleUserInput = async (userInput: any) => {
 
     // 保持当前UI控制状态，允许用户重新输入
     // 不调用 resetInspirationMode()，保留对话历史
+  }
+}
+
+const handleManualGenerateBlueprint = async () => {
+  const confirmed = await globalAlert.showConfirm(
+    '确定要结束对话并生成蓝图吗？\n\n已收集的信息足够生成一份完整的小说蓝图。',
+    '生成确认'
+  )
+
+  if (confirmed) {
+    // 模拟 AI 完成对话的消息
+    confirmationMessage.value = '🎉 完美！灵感的每一个碎片都已归位。我已经收集了构建你故事宇宙所需的所有核心基石。\n\n现在可以开始生成蓝图了！'
+    showBlueprintConfirmation.value = true
   }
 }
 

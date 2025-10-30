@@ -107,7 +107,7 @@ export const useNovelStore = defineStore('novel', () => {
     }
   }
 
-  async function generateBlueprint(): Promise<BlueprintGenerationResponse> {
+  async function generateBlueprint(forceRegenerate: boolean = false): Promise<BlueprintGenerationResponse> {
     // Generate blueprint from conversation history
     isLoading.value = true
     error.value = null
@@ -115,7 +115,7 @@ export const useNovelStore = defineStore('novel', () => {
       if (!currentProject.value) {
         throw new Error('没有当前项目')
       }
-      return await NovelAPI.generateBlueprint(currentProject.value.id)
+      return await NovelAPI.generateBlueprint(currentProject.value.id, forceRegenerate)
     } catch (err) {
       error.value = err instanceof Error ? err.message : '生成蓝图失败'
       throw err
@@ -206,6 +206,26 @@ export const useNovelStore = defineStore('novel', () => {
       currentProject.value = updatedProject // 更新 store
     } catch (err) {
       error.value = err instanceof Error ? err.message : '选择章节版本失败'
+      throw err
+    }
+  }
+
+  async function retryChapterVersion(chapterNumber: number, versionIndex: number, customPrompt?: string) {
+    // 不设置全局 isLoading，让调用方处理局部加载状态
+    error.value = null
+    try {
+      if (!currentProject.value) {
+        throw new Error('没有当前项目')
+      }
+      const updatedProject = await NovelAPI.retryChapterVersion(
+        currentProject.value.id,
+        chapterNumber,
+        versionIndex,
+        customPrompt
+      )
+      currentProject.value = updatedProject // 更新 store
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : '重试章节版本失败'
       throw err
     }
   }
@@ -352,6 +372,22 @@ export const useNovelStore = defineStore('novel', () => {
     }
   }
 
+  async function cancelPartGeneration(partNumber: number): Promise<{ success: boolean; message: string }> {
+    error.value = null
+    try {
+      if (!currentProject.value) {
+        throw new Error('没有当前项目')
+      }
+      const result = await NovelAPI.cancelPartGeneration(currentProject.value.id, partNumber)
+      // 刷新项目状态以获取最新的取消状态
+      await loadProject(currentProject.value.id, true)
+      return result
+    } catch (err) {
+      error.value = err instanceof Error ? err.message : `取消第${partNumber}部分生成失败`
+      throw err
+    }
+  }
+
   function clearError() {
     error.value = null
   }
@@ -382,6 +418,7 @@ export const useNovelStore = defineStore('novel', () => {
     generateChapter,
     evaluateChapter,
     selectChapterVersion,
+    retryChapterVersion,
     deleteProjects,
     updateChapterOutline,
     deleteChapter,
@@ -391,6 +428,7 @@ export const useNovelStore = defineStore('novel', () => {
     generatePartOutlines,
     generateSinglePartChapters,
     getPartOutlinesProgress,
+    cancelPartGeneration,
     clearError,
     setCurrentProject
   }

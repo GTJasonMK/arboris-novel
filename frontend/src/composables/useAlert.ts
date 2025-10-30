@@ -1,6 +1,6 @@
 import { ref } from 'vue'
 
-type AlertType = 'success' | 'error' | 'info' | 'confirmation'
+type AlertType = 'success' | 'error' | 'info' | 'warning' | 'confirmation'
 
 interface Alert {
   id: number
@@ -40,7 +40,7 @@ const showAlert = (
       id,
       visible: true,
       type,
-      title: title || (type === 'success' ? '成功' : type === 'error' ? '错误' : '提示'),
+      title: title || (type === 'success' ? '成功' : type === 'error' ? '错误' : type === 'warning' ? '警告' : '提示'),
       message,
       showCancel: options.showCancel || false,
       confirmText: options.confirmText || '确定',
@@ -52,7 +52,7 @@ const showAlert = (
     alerts.value.push(newAlert)
 
     // For simple notifications (not confirmation dialogs), auto-close after 3 seconds.
-    if ((type === 'success' || type === 'info') && !newAlert.showCancel) {
+    if ((type === 'success' || type === 'info' || type === 'warning') && !newAlert.showCancel) {
       setTimeout(() => {
         closeAlert(id, false) // Auto-close and resolve promise with false
       }, 3000)
@@ -68,6 +68,10 @@ const showError = (message: string, title: string = '错误') => {
   return showAlert(message, 'error', title);
 };
 
+const showWarning = (message: string, title: string = '警告') => {
+  return showAlert(message, 'warning', title);
+};
+
 const showConfirm = (message: string, title: string = '请确认') => {
   return showAlert(message, 'confirmation', title, { showCancel: true });
 };
@@ -78,6 +82,7 @@ export const globalAlert = {
   closeAlert,
   showSuccess,
   showError,
+  showWarning,
   showConfirm,
 }
 
