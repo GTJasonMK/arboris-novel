@@ -98,33 +98,51 @@
     </div>
 
     <!-- 操作按钮 -->
-    <div v-else class="text-center space-x-4">
-      <!-- <button
-        @click="$emit('back')"
-        class="bg-gray-200 text-gray-700 font-bold py-3 px-8 rounded-full hover:bg-gray-300 transition-all duration-300 transform hover:scale-105"
-      >
-        返回对话
-      </button> -->
-      <button
-        @click="generateBlueprint"
-        :disabled="isGenerating"
-        class="bg-gradient-to-r from-indigo-500 to-purple-600 text-white font-bold py-3 px-8 rounded-full hover:from-indigo-600 hover:to-purple-700 transition-all duration-300 transform hover:scale-105 shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
-      >
-        <span class="flex items-center justify-center">
-          <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
-            <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"></path>
-          </svg>
-          开始创建蓝图
-        </span>
-      </button>
+    <div v-else class="text-center space-y-3">
+      <div class="flex items-center justify-center gap-4">
+        <button
+          @click="generateBlueprint"
+          :disabled="isGenerating"
+          class="bg-gradient-to-r from-indigo-500 to-purple-600 text-white font-bold py-3 px-8 rounded-full hover:from-indigo-600 hover:to-purple-700 transition-all duration-300 transform hover:scale-105 shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
+        >
+          <span class="flex items-center justify-center">
+            <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
+              <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"></path>
+            </svg>
+            开始创建蓝图
+          </span>
+        </button>
+      </div>
+
+      <!-- 重新进行灵感对话按钮 -->
+      <div class="pt-2">
+        <button
+          @click="emit('restartConversation')"
+          :disabled="isGenerating"
+          class="text-sm text-gray-600 hover:text-indigo-600 font-medium py-2 px-4 rounded-lg hover:bg-indigo-50 transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          <span class="flex items-center justify-center">
+            <svg class="w-4 h-4 mr-1.5" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"></path>
+            </svg>
+            重新进行灵感对话
+          </span>
+        </button>
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onUnmounted, inject } from 'vue'
+import { ref, computed, onMounted, onUnmounted, inject } from 'vue'
 import { useNovelStore } from '@/stores/novel'
 import { globalAlert } from '@/composables/useAlert'
+import {
+  GenerationType,
+  markGenerationStart,
+  markGenerationComplete,
+  isGenerating as checkIsGenerating
+} from '@/utils/generationState'
 
 interface Props {
   aiMessage: string
@@ -135,6 +153,7 @@ defineProps<Props>()
 const emit = defineEmits<{
   blueprintGenerated: [response: any]
   back: []
+  restartConversation: []
 }>()
 
 const novelStore = useNovelStore()
@@ -174,9 +193,18 @@ const generateBlueprint = async (forceRegenerateOrEvent?: boolean | Event) => {
   // 如果参数是事件对象，则视为正常点击（不强制重新生成）
   const forceRegenerate = typeof forceRegenerateOrEvent === 'boolean' ? forceRegenerateOrEvent : false
 
+  if (!novelStore.currentProject?.id) {
+    globalAlert.showError('未找到项目信息', '生成失败')
+    return
+  }
+
   isGenerating.value = true
   progress.value = 0
   timeElapsed.value = 0
+
+  // 标记生成开始（状态持久化）
+  const generationType = forceRegenerate ? GenerationType.REFINE_BLUEPRINT : GenerationType.BLUEPRINT
+  markGenerationStart(generationType, novelStore.currentProject.id)
 
   // 启动进度条动画
   progressTimer = setInterval(() => {
@@ -194,10 +222,11 @@ const generateBlueprint = async (forceRegenerateOrEvent?: boolean | Event) => {
     }
   }, 100)
 
-  // 60秒超时
+  // 180秒超时
   timeoutTimer = setTimeout(() => {
     clearTimers()
     isGenerating.value = false
+    markGenerationComplete(generationType, novelStore.currentProject!.id)
     globalAlert.showError('生成超时，请稍后重试。如果问题持续，请检查网络连接。', '生成超时')
   }, maxTime * 1000)
 
@@ -222,6 +251,7 @@ const generateBlueprint = async (forceRegenerateOrEvent?: boolean | Event) => {
     // 清理并重置状态
     clearTimers()
     isGenerating.value = false
+    markGenerationComplete(generationType, novelStore.currentProject.id)
 
     // 通知父组件生成完成
     emit('blueprintGenerated', response)
@@ -230,6 +260,7 @@ const generateBlueprint = async (forceRegenerateOrEvent?: boolean | Event) => {
     console.error('生成蓝图失败:', error)
     clearTimers()
     isGenerating.value = false
+    markGenerationComplete(generationType, novelStore.currentProject!.id)
 
     // 检查是否是409冲突错误（已有章节大纲）
     if ((error as any).status === 409) {
@@ -259,6 +290,23 @@ const clearTimers = () => {
     timeoutTimer = null
   }
 }
+
+// 组件挂载时检查是否有未完成的生成状态
+onMounted(() => {
+  if (!novelStore.currentProject?.id) return
+
+  // 检查蓝图生成状态
+  const blueprintCheck = checkIsGenerating(GenerationType.BLUEPRINT, novelStore.currentProject.id, 10 * 60 * 1000)
+  const refineCheck = checkIsGenerating(GenerationType.REFINE_BLUEPRINT, novelStore.currentProject.id, 10 * 60 * 1000)
+
+  if (blueprintCheck.generating || refineCheck.generating) {
+    console.log('恢复蓝图生成状态', blueprintCheck.generating ? '初次生成' : '重新生成')
+    isGenerating.value = true
+    // 根据已经过去的时间设置进度（避免从0开始）
+    const elapsed = blueprintCheck.generating ? blueprintCheck.elapsed : refineCheck.elapsed
+    progress.value = Math.min(80, (elapsed / (maxTime * 1000)) * 80)
+  }
+})
 
 onUnmounted(() => {
   clearTimers()

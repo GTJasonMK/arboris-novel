@@ -14,6 +14,55 @@ Arboris-Novel 是一个基于 AI 的长篇小说创作辅助平台,通过概念�
 - **向量存储**: libsql (用于 RAG 章节检索)
 - **LLM 集成**: OpenAI API 兼容接口 + Ollama (可选的嵌入模型提供方)
 
+## 项目目录结构
+
+```
+arboris-novel/
+├── backend/              # Python FastAPI 后端
+│   ├── app/
+│   │   ├── api/         # API 路由层
+│   │   │   └── routers/ # 具体路由: auth, novels, writer, admin, llm_config
+│   │   ├── core/        # 核心配置: config.py, security.py
+│   │   ├── db/          # 数据库相关
+│   │   │   ├── migrations/ # SQL 迁移脚本
+│   │   │   ├── init_db.py  # 数据库初始化
+│   │   │   └── session.py  # 数据库会话管理
+│   │   ├── models/      # SQLAlchemy ORM 模型
+│   │   ├── schemas/     # Pydantic 请求/响应模型
+│   │   ├── repositories/ # 数据访问层(CRUD)
+│   │   ├── services/    # 业务逻辑层(LLM, RAG, 章节生成等)
+│   │   ├── utils/       # 工具函数
+│   │   └── main.py      # FastAPI 应用入口
+│   ├── prompts/         # LLM 提示词模板(concept, writing, evaluation等)
+│   ├── storage/         # SQLite 数据库和日志文件存放
+│   └── requirements.txt # Python 依赖
+├── frontend/            # Vue 3 + TypeScript 前端
+│   ├── src/
+│   │   ├── api/         # API 调用封装
+│   │   ├── components/  # Vue 组件
+│   │   │   ├── admin/   # 管理后台组件
+│   │   │   ├── novel-detail/ # 小说详情页组件
+│   │   │   ├── writing-desk/ # 写作台组件
+│   │   │   └── shared/  # 共享组件
+│   │   ├── composables/ # Vue Composables
+│   │   ├── router/      # Vue Router 配置
+│   │   ├── stores/      # Pinia 状态管理
+│   │   ├── types/       # TypeScript 类型定义
+│   │   ├── views/       # 页面级组件
+│   │   └── main.ts      # 应用入口
+│   └── package.json
+├── deploy/              # Docker 部署配置
+│   ├── docker-compose.yml
+│   ├── Dockerfile
+│   ├── nginx.conf
+│   └── .env.example
+├── docs/                # 项目文档
+│   └── novel_workflow.md # 小说生成流程说明
+├── quick-start.sh       # Linux/Mac 快速启动脚本
+└── quick-start.bat      # Windows 快速启动脚本
+```
+
+
 ## 常用开发命令
 
 ### 后端开发
@@ -55,24 +104,52 @@ npm run format
 
 ### 数据库迁移
 
-项目使用 Alembic 管理数据库迁移:
+项目使用 SQLAlchemy 的自动表创建机制,在首次启动时自动建表:
+
+- 数据库表结构由 `app/models/` 中的 ORM 模型定义
+- 应用启动时调用 `Base.metadata.create_all()` 自动创建所有表
+- 手动迁移脚本存放在 `backend/db/migrations/` (用于特殊情况的数据迁移)
+
+**修改数据库模型流程**:
+1. 编辑 `app/models/` 中的模型类
+2. 如需数据迁移,在 `backend/db/migrations/` 创建 SQL 脚本
+3. 重启应用,新表结构会自动创建
+4. 更新对应的 Pydantic Schema
+
+### 环境配置
+
+首次开发前需要配置环境变量:
 
 ```bash
+# 后端配置
 cd backend
+cp .env.example .env
+# 编辑 .env 文件,至少需要配置:
+# - SECRET_KEY (JWT密钥,随机生成)
+# - OPENAI_API_KEY (LLM API密钥)
+# - 可选: OPENAI_API_BASE_URL (使用其他兼容API)
 
-# 生成新迁移文件
-alembic revision --autogenerate -m "描述变更内容"
+# 前端配置(通常无需修改)
+cd frontend
+# Vite 会自动代理 /api 请求到 http://localhost:8000
+```
 
-# 应用迁移
-alembic upgrade head
+### 快速启动
 
-# 回滚迁移
-alembic downgrade -1
+```bash
+# Windows 用户(一键初始化配置)
+quick-start.bat
+
+# Linux/Mac 用户
+chmod +x quick-start.sh
+./quick-start.sh
 ```
 
 ### Docker 部署
 
 ```bash
+cd deploy
+
 # 使用 SQLite(默认)
 docker compose up -d
 
@@ -83,7 +160,7 @@ DB_PROVIDER=mysql docker compose --profile mysql up -d
 docker compose up -d --build
 
 # 查看日志
-docker compose logs -f backend
+docker compose logs -f app
 ```
 
 ## 架构设计要点
@@ -232,6 +309,39 @@ system_prompt = await prompt_service.get_prompt("writing")
 - 携带 JWT Token: `Authorization: Bearer <token>`
 - 后端基础路径: `/api/`(生产环境通过 Nginx 代理)
 
+### 主要 API 路由
+
+核心路由定义在 `backend/app/api/routers/`:
+
+- **auth.py**: 用户认证
+  - `POST /api/auth/login` - 用户登录
+  - `POST /api/auth/register` - 用户注册
+  - `GET /api/auth/me` - 获取当前用户信息
+
+- **novels.py**: 小说项目管理
+  - `POST /api/novels` - 创建小说项目
+  - `GET /api/novels/{id}` - 获取小说详情
+  - `POST /api/novels/{id}/concept/converse` - 概念对话
+  - `POST /api/novels/{id}/blueprint/generate` - 生成蓝图
+  - `PATCH /api/novels/{id}/blueprint` - 更新蓝图
+
+- **writer.py**: 章节写作
+  - `POST /api/writer/novels/{id}/chapters/generate` - 生成章节(支持并行)
+  - `POST /api/writer/novels/{id}/chapters/select` - 选择章节版本
+  - `POST /api/writer/novels/{id}/chapters/evaluate` - 评审章节版本
+  - `PUT /api/writer/novels/{id}/chapters/{chapter_number}` - 更新章节内容
+
+- **llm_config.py**: LLM 配置管理
+  - `GET /api/llm-configs` - 获取用户的 LLM 配置列表
+  - `POST /api/llm-configs` - 创建 LLM 配置
+  - `PUT /api/llm-configs/{id}` - 更新配置
+  - `POST /api/llm-configs/{id}/activate` - 激活配置
+
+- **admin.py**: 管理后台
+  - `GET /api/admin/system-configs` - 系统配置管理
+  - `PUT /api/admin/prompts/{name}` - 更新提示词
+
+
 ## 常见开发任务
 
 ### 添加新的 API 路由
@@ -245,10 +355,10 @@ system_prompt = await prompt_service.get_prompt("writing")
 ### 修改数据库模型
 
 1. 编辑 `app/models/` 中的模型类
-2. 生成迁移: `alembic revision --autogenerate -m "描述"`
-3. 检查生成的迁移文件(`backend/alembic/versions/`)
-4. 应用迁移: `alembic upgrade head`
-5. 更新对应的 Pydantic Schema
+2. 如需复杂数据迁移,在 `backend/db/migrations/` 创建 SQL 迁移脚本
+3. 重启后端服务,SQLAlchemy 会自动创建新表或新字段
+4. 更新对应的 Pydantic Schema
+5. 注意: 删除字段不会自动执行,需手动创建 SQL 脚本
 
 ### 调整提示词
 

@@ -1,0 +1,10 @@
+# 忽略该目录下的所有数据文件
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.log
+*.backup*
+
+# 保留 .gitkeep 文件
+!.gitkeep

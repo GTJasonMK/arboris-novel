@@ -154,6 +154,7 @@ interface Props {
   selectedVersionIndex: number
   availableVersions: ChapterVersion[]
   isSelectingVersion?: boolean
+  retryingVersionIndex?: number | null
 }
 
 const props = defineProps<Props>()
@@ -416,7 +417,8 @@ const currentComponentProps = computed(() => {
       selectedVersionIndex: props.selectedVersionIndex,
       isSelectingVersion: props.isSelectingVersion,
       evaluatingChapter: props.evaluatingChapter,
-      isEvaluationFailed: isChapterEvaluationFailed(props.selectedChapterNumber)
+      isEvaluationFailed: isChapterEvaluationFailed(props.selectedChapterNumber),
+      retryingVersionIndex: props.retryingVersionIndex
     }
   }
   if (selectedChapter.value?.content) {

@@ -1,23 +1,28 @@
 import json
 import logging
-from typing import Dict, List
+from typing import Dict, List, Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from io import BytesIO
 from datetime import datetime
 
 from ...core.state_machine import ProjectStatus
 from ...core.dependencies import get_current_user
+from ...core.config import settings
 from ...db.session import get_session
+from ...models.part_outline import PartOutline
+from ...models.novel import ChapterOutline
 from ...schemas.novel import (
     Blueprint,
     BlueprintGenerationResponse,
     BlueprintPatch,
     BlueprintRefineRequest,
     Chapter as ChapterSchema,
+    ProjectUpdateRequest,
     ConverseRequest,
     ConverseResponse,
     NovelProject as NovelProjectSchema,
@@ -29,6 +34,8 @@ from ...schemas.user import UserInDB
 from ...services.llm_service import LLMService
 from ...services.novel_service import NovelService
 from ...services.prompt_service import PromptService
+from ...services.vector_store_service import VectorStoreService
+from ...services.chapter_ingest_service import ChapterIngestionService
 from ...utils.json_utils import remove_think_tags, unwrap_markdown_json
 
 logger = logging.getLogger(__name__)
@@ -256,13 +263,15 @@ async def generate_blueprint(
         raise HTTPException(status_code=400, detail="无法从历史对话中提取内容")
 
     system_prompt = _ensure_prompt(await prompt_service.get_prompt("screenwriting"), "screenwriting")
+    # 对于大型小说，蓝图JSON可能很大，需要足够的输出长度
+    # Gemini 2.5 Flash支持最多8192 output tokens
     blueprint_raw = await llm_service.get_llm_response(
         system_prompt=system_prompt,
         conversation_history=formatted_history,
         temperature=0.3,
         user_id=current_user.id,
         timeout=480.0,
-        max_tokens=8000,  # DeepSeek 限制最大 8192
+        max_tokens=8192,  # Gemini 2.5 Flash的最大输出限制
     )
     blueprint_raw = remove_think_tags(blueprint_raw)
 
@@ -270,10 +279,17 @@ async def generate_blueprint(
     try:
         blueprint_data = json.loads(blueprint_normalized)
     except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=500, detail="蓝图生成失败，请稍后重试") from exc
+        logger.error("项目 %s 蓝图JSON解析失败: %s\n完整原始内容(%d字符):\n%s",
+                    project_id, str(exc), len(blueprint_raw), blueprint_raw)
+        raise HTTPException(status_code=500, detail=f"蓝图JSON格式错误: {str(exc)}") from exc
 
     logger.info("项目 %s 蓝图JSON解析成功，total_chapters=%s", project_id, blueprint_data.get('total_chapters'))
-    blueprint = Blueprint(**blueprint_data)
+
+    try:
+        blueprint = Blueprint(**blueprint_data)
+    except Exception as exc:
+        logger.error("项目 %s 蓝图Pydantic验证失败: %s\nblueprint_data keys: %s", project_id, str(exc), list(blueprint_data.keys()))
+        raise HTTPException(status_code=500, detail=f"蓝图数据格式错误: {str(exc)}") from exc
 
     # 强制工作流分离：蓝图生成阶段不包含章节大纲
     # 即使LLM违反指令生成了章节大纲，也要强制清空
@@ -298,8 +314,10 @@ async def generate_blueprint(
                 # 优先匹配明确指定章节数的表述
                 patterns = [
                     r'(?:写|创作|生成|共|总共|一共|大概|大约)[\s\w]*?(\d+)\s*章',  # "写100章"、"共100章"
-                    r'(\d+)\s*章(?:左右|以上|以内|的小说)',  # "100章左右"、"100章的小说"
+                    r'(\d+)\s*章(?:左右|以上|以内|的小说|的)',  # "100章左右"、"100章的小说"、"100章的"
                     r'(?:小说|故事)[\s\w]{0,10}?(\d+)\s*章',  # "小说100章"
+                    r'(?:设置|设定|计划|预计|预期|篇幅|长度|章节数)[\s\w:：]*?(\d+)\s*(?:章|$)',  # "设置512章"、"章节数:512"
+                    r'(\d+)\s*章(?!节)',  # 单独的"512章"（但不匹配"第512章节"）
                 ]
                 for pattern in patterns:
                     match = re.search(pattern, content)
@@ -350,7 +368,20 @@ async def generate_blueprint(
             logger.info("项目 %s 章节数为 %d，自动设置 needs_part_outlines=False", project_id, default_chapters)
 
     # 新流程：蓝图生成阶段不包含章节大纲，统一设置为 blueprint_ready
-    await novel_service.transition_project_status(project, ProjectStatus.BLUEPRINT_READY.value)
+    # 只在状态不是 blueprint_ready 时才执行转换（避免重复转换导致状态机错误）
+    logger.info("========== CODE_VERSION=2025-10-31-FIX-v2 当前状态: %s ==========", project.status)
+    try:
+        if project.status != ProjectStatus.BLUEPRINT_READY.value:
+            logger.info("状态不是 blueprint_ready，执行状态转换: %s -> blueprint_ready", project.status)
+            await novel_service.transition_project_status(project, ProjectStatus.BLUEPRINT_READY.value)
+            logger.info("状态转换成功")
+        else:
+            logger.info("状态已是 blueprint_ready，跳过状态转换")
+    except Exception as exc:
+        logger.error("项目 %s 状态转换失败: 当前状态=%s, 目标状态=blueprint_ready, 错误=%s",
+                    project_id, project.status, str(exc), exc_info=True)
+        # 状态转换失败不应该阻止蓝图生成，记录警告后继续
+        logger.warning("项目 %s 状态转换失败但继续执行", project_id)
 
     needs_part_outlines = blueprint.needs_part_outlines
 
@@ -374,7 +405,69 @@ async def generate_blueprint(
             "接下来请在详情页点击「生成章节大纲」按钮来规划具体章节。"
         )
 
-    await novel_service.replace_blueprint(project_id, blueprint)
+    # 重新生成蓝图时，清除所有已生成的章节内容、部分大纲和向量库数据
+    # 确保数据一致性：PartOutline、ChapterOutline 和 Chapter 同步删除
+
+    # 1. 删除所有部分大纲（PartOutline）
+    if project.part_outlines:
+        part_count = len(project.part_outlines)
+        await session.execute(delete(PartOutline).where(PartOutline.project_id == project_id))
+        logger.info("项目 %s 重新生成蓝图，清除 %d 个部分大纲", project_id, part_count)
+
+    # 2. 删除所有已生成的章节（Chapter）和章节大纲（ChapterOutline）
+    if project.chapters:
+        chapter_numbers = [ch.chapter_number for ch in project.chapters]
+        if chapter_numbers:
+            logger.info(
+                "项目 %s 重新生成蓝图，清除 %d 个已生成章节",
+                project_id,
+                len(chapter_numbers),
+            )
+
+            # 删除数据库中的章节记录（包括 ChapterOutline 和 Chapter）
+            await novel_service.delete_chapters(project_id, chapter_numbers)
+
+            # 删除数据库中的章节记录会同时删除章节大纲
+            # 同步清理向量库，避免过时内容被检索
+            vector_store: Optional[VectorStoreService]
+            if not settings.vector_store_enabled:
+                vector_store = None
+            else:
+                try:
+                    vector_store = VectorStoreService()
+                except RuntimeError as exc:
+                    logger.warning("向量库初始化失败，跳过章节向量删除: %s", exc)
+                    vector_store = None
+
+            if vector_store:
+                ingestion_service = ChapterIngestionService(
+                    llm_service=llm_service,
+                    vector_store=vector_store
+                )
+                await ingestion_service.delete_chapters(project_id, chapter_numbers)
+                logger.info("项目 %s 已从向量库移除 %d 个章节", project_id, len(chapter_numbers))
+
+    # 3. 删除所有章节大纲（可能存在大纲但没有章节内容的情况）
+    try:
+        outline_count = await novel_service.count_chapter_outlines(project_id)
+        if outline_count > 0:
+            logger.info("项目 %s 准备删除 %d 个章节大纲", project_id, outline_count)
+            await session.execute(delete(ChapterOutline).where(ChapterOutline.project_id == project_id))
+            logger.info("项目 %s 重新生成蓝图，已清除 %d 个章节大纲", project_id, outline_count)
+        else:
+            logger.info("项目 %s 没有章节大纲需要删除", project_id)
+    except Exception as exc:
+        logger.error("项目 %s 删除章节大纲时出错: %s", project_id, str(exc), exc_info=True)
+        raise HTTPException(status_code=500, detail=f"删除章节大纲失败: {str(exc)}") from exc
+
+    logger.info("项目 %s 准备保存蓝图到数据库", project_id)
+    try:
+        await novel_service.replace_blueprint(project_id, blueprint)
+    except Exception as exc:
+        logger.error("项目 %s 保存蓝图失败: %s", project_id, str(exc), exc_info=True)
+        raise HTTPException(status_code=500, detail=f"保存蓝图失败: {str(exc)}") from exc
+
+    logger.info("项目 %s 蓝图保存成功", project_id)
     if blueprint.title:
         project.title = blueprint.title
         await session.commit()
@@ -453,13 +546,14 @@ async def generate_chapter_outlines(
 
     # 调用LLM生成章节大纲
     logger.info("调用LLM生成 %d 个章节大纲", total_chapters)
+    # 对于大型小说，章节大纲JSON可能很大，不应限制输出长度
     response = await llm_service.get_llm_response(
         system_prompt=system_prompt,
         conversation_history=[{"role": "user", "content": user_prompt}],
         temperature=0.3,
         user_id=current_user.id,
         timeout=300.0,
-        max_tokens=8000,
+        max_tokens=None,  # 移除限制，让模型输出完整大纲
     )
 
     # 解析响应
@@ -553,10 +647,12 @@ async def refine_blueprint(
         raise HTTPException(status_code=400, detail="当前项目没有蓝图，请先生成初始蓝图")
 
     # 将当前蓝图转为JSON字符串
+    # 排除 part_outlines 字段，因为优化蓝图时不应该修改部分大纲结构
     current_blueprint_json = project_schema.blueprint.model_dump_json(
         indent=2,
         exclude_none=True,
-        by_alias=False
+        by_alias=False,
+        exclude={'part_outlines'}
     )
 
     # 构造优化提示词
@@ -565,40 +661,43 @@ async def refine_blueprint(
         "screenwriting"
     )
 
-    # 在系统提示词后添加优化任务说明
-    refinement_context = f"""
+    # 添加优化任务说明
+    system_prompt += """
 
 ## 蓝图优化任务
 
 你正在进行的是蓝图**优化任务**，而非从零开始创建。
-
-### 当前蓝图（JSON格式）：
-```json
-{current_blueprint_json}
-```
-
-### 用户的优化需求：
-{request.refinement_instruction}
 
 ### 优化要求：
 1. **保持现有设定的连贯性**：除非用户明确要求修改，否则保留现有的核心设定
 2. **针对性改进**：重点优化用户指出的方面
 3. **增量改进**：在现有基础上完善，而非推翻重来
 4. **输出完整蓝图**：返回优化后的完整蓝图JSON，确保所有字段完整
-
-请基于以上信息，生成优化后的完整蓝图。
+5. **⚠️ 绝对不要生成章节大纲**：`chapter_outline` 必须保持为空数组 `[]`，章节大纲将在后续步骤单独生成
 """
 
-    full_system_prompt = system_prompt + refinement_context
+    # 构建用户消息
+    user_message = f"""请基于以下信息优化小说蓝图。
+
+## 当前蓝图（JSON格式）：
+```json
+{current_blueprint_json}
+```
+
+## 用户的优化需求：
+{request.refinement_instruction}
+
+请生成优化后的完整蓝图JSON。"""
 
     # 调用LLM生成优化后的蓝图
+    # 对于大型小说（如150章），蓝图JSON可能很大，不应限制输出长度
     blueprint_raw = await llm_service.get_llm_response(
-        system_prompt=full_system_prompt,
-        conversation_history=[],  # 优化任务不需要对话历史，所有上下文已在系统提示词中
+        system_prompt=system_prompt,
+        conversation_history=[{"role": "user", "content": user_message}],
         temperature=0.3,
         user_id=current_user.id,
         timeout=480.0,
-        max_tokens=8000,  # DeepSeek 限制最大 8192
+        max_tokens=None,  # 移除限制，让模型输出完整蓝图
     )
     blueprint_raw = remove_think_tags(blueprint_raw)
 
@@ -611,7 +710,26 @@ async def refine_blueprint(
         raise HTTPException(status_code=500, detail="蓝图优化失败，请稍后重试") from exc
 
     # 验证并保存优化后的蓝图
-    refined_blueprint = Blueprint(**blueprint_data)
+    try:
+        refined_blueprint = Blueprint(**blueprint_data)
+    except Exception as exc:
+        logger.exception("蓝图优化失败，Pydantic验证错误：project_id=%s, error=%s", project_id, str(exc))
+        raise HTTPException(status_code=500, detail=f"蓝图优化失败：{str(exc)}") from exc
+
+    # 强制工作流分离：蓝图优化阶段不应包含章节大纲
+    if refined_blueprint.chapter_outline:
+        logger.warning(
+            "项目 %s 蓝图优化时包含了 %d 个章节大纲，违反工作流设计，已强制清空",
+            project_id,
+            len(refined_blueprint.chapter_outline),
+        )
+        refined_blueprint.chapter_outline = []
+
+    # 重要：保留原有的 part_outlines，优化蓝图时不应该修改部分大纲结构
+    if project_schema.blueprint.part_outlines:
+        refined_blueprint.part_outlines = project_schema.blueprint.part_outlines
+        logger.info("项目 %s 优化蓝图时保留了 %d 个部分大纲", project_id, len(project_schema.blueprint.part_outlines))
+
     await novel_service.replace_blueprint(project_id, refined_blueprint)
 
     # 更新项目标题（如果蓝图中有）
@@ -626,6 +744,27 @@ async def refine_blueprint(
     )
 
     return BlueprintGenerationResponse(blueprint=refined_blueprint, ai_message=ai_message)
+
+
+@router.patch("/{project_id}", response_model=NovelProjectSchema)
+async def update_project(
+    project_id: str,
+    payload: ProjectUpdateRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> NovelProjectSchema:
+    """更新项目基本信息（标题、描述等）"""
+    novel_service = NovelService(session)
+    project = await novel_service.ensure_project_owner(project_id, current_user.id)
+
+    update_data = payload.model_dump(exclude_unset=True)
+    if update_data:
+        for key, value in update_data.items():
+            setattr(project, key, value)
+        await session.commit()
+        logger.info("项目 %s 更新基本信息：%s", project_id, list(update_data.keys()))
+
+    return await novel_service.get_project_schema(project_id, current_user.id)
 
 
 @router.patch("/{project_id}/blueprint", response_model=NovelProjectSchema)

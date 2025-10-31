@@ -312,20 +312,6 @@ export class NovelAPI {
     })
   }
 
-  static async generateChapterOutline(
-    projectId: string,
-    startChapter: number,
-    numChapters: number
-  ): Promise<NovelProject> {
-    return request(`${WRITER_BASE}/${projectId}/chapters/outline`, {
-      method: 'POST',
-      body: JSON.stringify({
-        start_chapter: startChapter,
-        num_chapters: numChapters
-      })
-    })
-  }
-
   // 短篇小说（≤50章）一次性生成全部章节大纲
   static async generateAllChapterOutlines(projectId: string): Promise<{
     message: string
@@ -334,6 +320,13 @@ export class NovelAPI {
   }> {
     return request(`${NOVELS_BASE}/${projectId}/chapter-outlines/generate`, {
       method: 'POST'
+    })
+  }
+
+  static async updateProject(projectId: string, data: { title?: string; description?: string }): Promise<NovelProject> {
+    return request(`${NOVELS_BASE}/${projectId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(data)
     })
   }
 
@@ -410,6 +403,52 @@ export class NovelAPI {
         part_numbers: partNumbers,
         max_concurrent: maxConcurrent
       })
+    })
+  }
+
+  // 章节大纲灵活管理API
+  static async generateChapterOutlinesByCount(
+    projectId: string,
+    count: number,
+    startFrom?: number
+  ): Promise<{ message: string; generated_chapters: number[]; total_chapters: number }> {
+    return request(`${WRITER_BASE}/${projectId}/chapter-outlines/generate-count`, {
+      method: 'POST',
+      body: JSON.stringify({
+        count,
+        start_from: startFrom
+      })
+    })
+  }
+
+  static async deleteLatestChapterOutlines(
+    projectId: string,
+    count: number
+  ): Promise<{ message: string; deleted_chapters: number[]; remaining_chapters: number; warning?: string }> {
+    return request(`${WRITER_BASE}/${projectId}/chapter-outlines/delete-latest`, {
+      method: 'DELETE',
+      body: JSON.stringify({ count })
+    })
+  }
+
+  static async regenerateChapterOutline(
+    projectId: string,
+    chapterNumber: number,
+    prompt?: string
+  ): Promise<{ message: string; chapter_outline: ChapterOutline }> {
+    return request(`${WRITER_BASE}/${projectId}/chapter-outlines/${chapterNumber}/regenerate`, {
+      method: 'POST',
+      body: JSON.stringify({ prompt })
+    })
+  }
+
+  static async regeneratePartOutlines(
+    projectId: string,
+    prompt?: string
+  ): Promise<PartOutlineProgress> {
+    return request(`${WRITER_BASE}/${projectId}/part-outlines/regenerate`, {
+      method: 'POST',
+      body: JSON.stringify({ prompt })
     })
   }
 }

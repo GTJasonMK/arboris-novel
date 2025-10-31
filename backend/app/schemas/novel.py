@@ -218,6 +218,11 @@ class EditChapterRequest(BaseModel):
     content: str
 
 
+class ProjectUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+
+
 # 部分大纲相关请求和响应模型
 class GeneratePartOutlinesRequest(BaseModel):
     """生成部分大纲请求"""
@@ -263,3 +268,45 @@ class PartOutlineGenerationProgress(BaseModel):
     total_parts: int = 0  # 总部分数
     completed_parts: int = 0  # 已完成部分数
     status: str = "pending"  # 整体状态：pending, partial, completed
+
+
+# 章节大纲灵活管理相关请求模型
+class GenerateChapterOutlinesByCountRequest(BaseModel):
+    """生成指定数量的章节大纲请求"""
+    count: int = Field(
+        ...,
+        description="要生成的章节数量",
+        ge=1,
+        le=100
+    )
+    start_from: Optional[int] = Field(
+        default=None,
+        description="从第几章开始生成（可选，默认为当前最大章节号+1）"
+    )
+
+
+class DeleteLatestChapterOutlinesRequest(BaseModel):
+    """删除最新N章大纲请求"""
+    count: int = Field(
+        ...,
+        description="要删除的章节数量",
+        ge=1
+    )
+
+
+class RegenerateChapterOutlineRequest(BaseModel):
+    """重新生成章节大纲请求"""
+    prompt: Optional[str] = Field(
+        default=None,
+        description="优化提示词（可选）",
+        max_length=500
+    )
+
+
+class RegeneratePartOutlinesRequest(BaseModel):
+    """重新生成部分大纲请求"""
+    prompt: Optional[str] = Field(
+        default=None,
+        description="优化提示词（可选）",
+        max_length=500
+    )

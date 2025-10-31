@@ -290,24 +290,6 @@ export const useNovelStore = defineStore('novel', () => {
     }
   }
 
-  async function generateChapterOutline(startChapter: number, numChapters: number) {
-    error.value = null
-    try {
-      if (!currentProject.value) {
-        throw new Error('没有当前项目')
-      }
-      const updatedProject = await NovelAPI.generateChapterOutline(
-        currentProject.value.id,
-        startChapter,
-        numChapters
-      )
-      currentProject.value = updatedProject // 更新 store
-    } catch (err) {
-      error.value = err instanceof Error ? err.message : '生成大纲失败'
-      throw err
-    }
-  }
-
   async function editChapterContent(projectId: string, chapterNumber: number, content: string) {
     error.value = null
     try {
@@ -422,7 +404,6 @@ export const useNovelStore = defineStore('novel', () => {
     deleteProjects,
     updateChapterOutline,
     deleteChapter,
-    generateChapterOutline,
     editChapterContent,
     // 部分大纲相关
     generatePartOutlines,

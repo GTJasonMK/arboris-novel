@@ -65,6 +65,7 @@
           :selected-version-index="selectedVersionIndex"
           :available-versions="availableVersions"
           :is-selecting-version="isSelectingVersion"
+          :retrying-version-index="retryingVersionIndex"
           @regenerate-chapter="regenerateChapter"
           @evaluate-chapter="evaluateChapter"
           @hide-version-selector="hideVersionSelector"
@@ -111,6 +112,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNovelStore } from '@/stores/novel'
 import type { Chapter, ChapterOutline, ChapterGenerationResponse, ChapterVersion } from '@/api/novel'
+import { NovelAPI } from '@/api/novel'
 import { globalAlert } from '@/composables/useAlert'
 import Tooltip from '@/components/Tooltip.vue'
 import WDHeader from '@/components/writing-desk/WDHeader.vue'
@@ -134,6 +136,7 @@ const selectedChapterNumber = ref<number | null>(null)
 const chapterGenerationResult = ref<ChapterGenerationResponse | null>(null)
 const selectedVersionIndex = ref<number>(0)
 const generatingChapter = ref<number | null>(null)
+const retryingVersionIndex = ref<number | null>(null)
 const sidebarOpen = ref(false)
 const showVersionDetailModal = ref(false)
 const detailVersionIndex = ref<number>(0)
@@ -507,6 +510,9 @@ const retryVersion = async (versionIndex: number) => {
       }
     }
 
+    // 设置正在重新生成的版本索引
+    retryingVersionIndex.value = versionIndex
+
     // 开始重试生成
     await novelStore.retryChapterVersion(
       selectedChapterNumber.value,
@@ -521,6 +527,9 @@ const retryVersion = async (versionIndex: number) => {
   } catch (error) {
     console.error('重试版本失败:', error)
     globalAlert.showError(`重试版本失败: ${error instanceof Error ? error.message : '未知错误'}`, '生成失败')
+  } finally {
+    // 清除正在重新生成的版本索引
+    retryingVersionIndex.value = null
   }
 }
 
@@ -612,8 +621,9 @@ const handleGenerateOutline = async (numChapters: number) => {
   if (!project.value) return
   isGeneratingOutline.value = true
   try {
-    const startChapter = (project.value.blueprint?.chapter_outline?.length || 0) + 1
-    await novelStore.generateChapterOutline(startChapter, numChapters)
+    await NovelAPI.generateChapterOutlinesByCount(project.value.id, numChapters)
+    // 刷新项目数据以显示新生成的大纲
+    await novelStore.loadProject(project.value.id)
     globalAlert.showSuccess('新的章节大纲已生成', '操作成功')
   } catch (error) {
     console.error('生成大纲失败:', error)

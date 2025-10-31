@@ -1,20 +1,51 @@
 # -*- coding: utf-8 -*-
-"""OpenAI 兼容型 LLM 工具封装，保持与旧项目一致的接口体验。"""
+"""OpenAI 兼容型 LLM 工具封装，提供统一的请求、收集、重试机制。"""
 
+import logging
 import os
 from dataclasses import asdict, dataclass
-from typing import AsyncGenerator, Dict, List, Optional
+from enum import Enum
+from typing import AsyncGenerator, Dict, List, Optional, Tuple
 
 from openai import AsyncOpenAI
+
+logger = logging.getLogger(__name__)
+
+
+class ContentCollectMode(Enum):
+    """流式响应收集模式"""
+    CONTENT_ONLY = "content_only"  # 仅收集最终答案（用于结构化输出）
+    WITH_REASONING = "with_reasoning"  # 收集答案+思考过程
+    REASONING_ONLY = "reasoning_only"  # 仅收集思考过程
 
 
 @dataclass
 class ChatMessage:
+    """聊天消息"""
     role: str
     content: str
 
     def to_dict(self) -> Dict[str, str]:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, str]) -> "ChatMessage":
+        """从字典创建消息"""
+        return cls(role=data["role"], content=data["content"])
+
+    @classmethod
+    def from_list(cls, messages: List[Dict[str, str]]) -> List["ChatMessage"]:
+        """批量转换消息列表"""
+        return [cls.from_dict(msg) for msg in messages]
+
+
+@dataclass
+class StreamCollectResult:
+    """流式收集结果"""
+    content: str  # 最终答案
+    reasoning: str  # 思考过程（如有）
+    finish_reason: Optional[str]  # 完成原因
+    chunk_count: int  # 收到的chunk数量
 
 
 class LLMClient:
@@ -81,6 +112,22 @@ class LLMClient:
         timeout: int = 120,
         **kwargs,
     ) -> AsyncGenerator[Dict[str, str], None]:
+        """
+        流式聊天请求。
+
+        Args:
+            messages: 消息列表
+            model: 模型名称
+            response_format: 响应格式（如 "json_object"）
+            temperature: 温度参数
+            top_p: Top-P 参数
+            max_tokens: 最大token数
+            timeout: 超时时间（秒）
+            **kwargs: 其他参数
+
+        Yields:
+            字典格式的流式响应，包含 content、reasoning_content、finish_reason
+        """
         payload = {
             "model": model or os.environ.get("MODEL", "gpt-3.5-turbo"),
             "messages": [msg.to_dict() for msg in messages],
@@ -103,7 +150,111 @@ class LLMClient:
             if not chunk.choices:
                 continue
             choice = chunk.choices[0]
-            yield {
+
+            # 支持DeepSeek R1等模型的reasoning_content字段
+            result = {
                 "content": choice.delta.content,
                 "finish_reason": choice.finish_reason,
             }
+
+            # 检查是否有reasoning_content（DeepSeek R1特有）
+            if hasattr(choice.delta, 'reasoning_content') and choice.delta.reasoning_content:
+                result["reasoning_content"] = choice.delta.reasoning_content
+
+            yield result
+
+    async def stream_and_collect(
+        self,
+        messages: List[ChatMessage],
+        model: Optional[str] = None,
+        response_format: Optional[str] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        timeout: int = 120,
+        collect_mode: ContentCollectMode = ContentCollectMode.CONTENT_ONLY,
+        log_chunks: bool = False,
+        **kwargs,
+    ) -> StreamCollectResult:
+        """
+        流式请求并收集完整响应（便捷方法）。
+
+        Args:
+            messages: 消息列表
+            model: 模型名称
+            response_format: 响应格式
+            temperature: 温度参数
+            top_p: Top-P 参数
+            max_tokens: 最大token数
+            timeout: 超时时间（秒）
+            collect_mode: 收集模式
+            log_chunks: 是否记录chunk日志（仅前3个）
+            **kwargs: 其他参数
+
+        Returns:
+            StreamCollectResult: 收集结果
+        """
+        content = ""
+        reasoning = ""
+        finish_reason = None
+        chunk_count = 0
+
+        async for chunk in self.stream_chat(
+            messages=messages,
+            model=model,
+            response_format=response_format,
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            **kwargs,
+        ):
+            chunk_count += 1
+
+            # 可选的日志记录
+            if log_chunks and chunk_count <= 3:
+                logger.debug("收到第 %d 个 chunk: %s", chunk_count, chunk)
+
+            # 根据收集模式决定收集哪些内容
+            if collect_mode in (ContentCollectMode.CONTENT_ONLY, ContentCollectMode.WITH_REASONING):
+                if chunk.get("content"):
+                    content += chunk["content"]
+
+            if collect_mode in (ContentCollectMode.WITH_REASONING, ContentCollectMode.REASONING_ONLY):
+                if chunk.get("reasoning_content"):
+                    reasoning += chunk["reasoning_content"]
+
+            if chunk.get("finish_reason"):
+                finish_reason = chunk["finish_reason"]
+
+        return StreamCollectResult(
+            content=content,
+            reasoning=reasoning,
+            finish_reason=finish_reason,
+            chunk_count=chunk_count,
+        )
+
+    @classmethod
+    def create_from_config(
+        cls,
+        config: Dict[str, Optional[str]],
+        strict_mode: bool = False,
+        simulate_browser: bool = True,
+    ) -> "LLMClient":
+        """
+        从配置字典创建客户端（工厂方法）。
+
+        Args:
+            config: 配置字典，包含 api_key、base_url、model
+            strict_mode: 是否启用严格模式
+            simulate_browser: 是否模拟浏览器请求头
+
+        Returns:
+            LLMClient 实例
+        """
+        return cls(
+            api_key=config.get("api_key"),
+            base_url=config.get("base_url"),
+            strict_mode=strict_mode,
+            simulate_browser=simulate_browser,
+        )

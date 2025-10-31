@@ -16,9 +16,21 @@
               </svg>
             </button>
             <div class="flex-1 min-w-0">
-              <h1 class="text-xl sm:text-2xl lg:text-3xl font-bold text-slate-900 truncate">
-                {{ formattedTitle }}
-              </h1>
+              <div class="flex items-center gap-2">
+                <h1 class="text-xl sm:text-2xl lg:text-3xl font-bold text-slate-900 truncate">
+                  {{ formattedTitle }}
+                </h1>
+                <button
+                  v-if="!isAdmin"
+                  @click="editProjectTitle"
+                  class="text-slate-400 hover:text-indigo-600 transition-colors p-1"
+                  title="编辑项目标题"
+                >
+                  <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                    <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"></path>
+                  </svg>
+                </button>
+              </div>
               <p v-if="overviewMeta.updated_at" class="text-xs sm:text-sm text-slate-500 mt-0.5">
                 最近更新：{{ overviewMeta.updated_at }}
               </p>
@@ -190,34 +202,6 @@
 
               <!-- Content -->
               <div v-if="!isSectionLoading && !currentError" class="flex-1 flex flex-col min-h-0 overflow-hidden">
-                <!-- 蓝图查看模式横幅 -->
-                <div v-if="isBlueprintSection && !isAdmin" class="mb-4 bg-gradient-to-r from-indigo-50 to-purple-50 border border-indigo-200 rounded-xl p-4 flex-shrink-0">
-                  <div class="flex items-center justify-between gap-4">
-                    <div class="flex items-center gap-3">
-                      <div class="w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-500 rounded-lg flex items-center justify-center flex-shrink-0">
-                        <svg class="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 20 20">
-                          <path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z"></path>
-                          <path fill-rule="evenodd" d="M4 5a2 2 0 012-2 3 3 0 003 3h2a3 3 0 003-3 2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clip-rule="evenodd"></path>
-                        </svg>
-                      </div>
-                      <div>
-                        <h4 class="font-semibold text-indigo-900">蓝图查看模式</h4>
-                        <p class="text-sm text-indigo-700">您可以点击编辑图标修改各个字段，或重新进行灵感对话</p>
-                      </div>
-                    </div>
-                    <button
-                      @click="goToInspirationMode"
-                      class="px-4 py-2 text-sm font-medium text-white bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg flex items-center gap-2 whitespace-nowrap flex-shrink-0"
-                    >
-                      <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                        <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"></path>
-                      </svg>
-                      <span class="hidden sm:inline">重新进行灵感对话</span>
-                      <span class="sm:hidden">重新对话</span>
-                    </button>
-                  </div>
-                </div>
-
                 <!-- 实际内容 -->
                 <component
                   :is="currentComponent"
@@ -225,6 +209,7 @@
                   :class="componentContainerClass"
                   @edit="handleSectionEdit"
                   @add="startAddChapter"
+                  @refresh="handleSectionRefresh"
                 />
               </div>
             </div>
@@ -310,6 +295,7 @@ import { useNovelStore } from '@/stores/novel'
 import { NovelAPI } from '@/api/novel'
 import { AdminAPI } from '@/api/admin'
 import type { NovelProject, NovelSectionResponse, NovelSectionType } from '@/api/novel'
+import { globalAlert } from '@/composables/useAlert'
 import BlueprintEditModal from '@/components/BlueprintEditModal.vue'
 import OverviewSection from '@/components/novel-detail/OverviewSection.vue'
 import WorldSettingSection from '@/components/novel-detail/WorldSettingSection.vue'
@@ -448,6 +434,9 @@ const originalBodyOverflow = ref('')
 const showExportMenu = ref(false)
 const isExporting = ref(false)
 
+const isEditingTitle = ref(false)
+const editingTitle = ref('')
+
 const novel = computed(() => !props.isAdmin ? novelStore.currentProject as NovelProject | null : null)
 
 const shouldShowRefineBlueprintButton = computed(() => {
@@ -538,8 +527,17 @@ const switchSection = async (section: SectionKey) => {
 const goBack = () => router.push(props.isAdmin ? '/admin' : '/workspace')
 
 const goToRefineBlueprintMode = () => {
-  // 切换到overview section，进入蓝图查看/编辑模式
-  switchSection('overview')
+  // 导航到灵感模式，传递refine_mode参数直接显示蓝图确认页面
+  const projectId = novel.value?.id
+  if (!projectId) return
+
+  router.push({
+    path: '/inspiration',
+    query: {
+      project_id: projectId,
+      refine_mode: 'true'
+    }
+  })
 }
 
 const goToInspirationMode = async () => {
@@ -556,11 +554,6 @@ const goToWritingDesk = async () => {
   const path = project.title === '未命名灵感' ? `/inspiration?project_id=${project.id}` : `/novel/${project.id}`
   router.push(path)
 }
-
-const isBlueprintSection = computed(() => {
-  const blueprintSections: SectionKey[] = ['overview', 'world_setting', 'characters', 'relationships']
-  return blueprintSections.includes(activeSection.value)
-})
 
 const currentComponent = computed(() => sectionComponents[activeSection.value])
 const isSectionLoading = computed(() => sectionLoading[activeSection.value])
@@ -606,6 +599,11 @@ const handleSectionEdit = (payload: { field: string; title: string; value: any }
   isModalOpen.value = true
 }
 
+const handleSectionRefresh = () => {
+  console.log('[NovelDetailShell] 收到 refresh 事件，重新加载当前 section:', activeSection.value)
+  reloadSection(activeSection.value, true)
+}
+
 const resolveSectionKey = (field: string): SectionKey => {
   if (field.startsWith('world_setting')) return 'world_setting'
   if (field.startsWith('characters')) return 'characters'
@@ -633,6 +631,45 @@ const handleSave = async (data: { field: string; content: any }) => {
     payload[field] = content
   }
 
+  // 如果修改了角色，需要同步更新关系表中的角色引用
+  if (field === 'characters' && project.blueprint?.characters && project.blueprint?.relationships) {
+    const oldCharacters = project.blueprint.characters
+    const newCharacters = content as any[]
+
+    // 创建旧名称到新名称的映射
+    const nameMap = new Map<string, string>()
+    oldCharacters.forEach((oldChar: any, index: number) => {
+      if (newCharacters[index] && oldChar.name !== newCharacters[index].name) {
+        nameMap.set(oldChar.name, newCharacters[index].name)
+      }
+    })
+
+    // 如果有角色名称变化，更新关系表
+    if (nameMap.size > 0 && project.blueprint.relationships.length > 0) {
+      const updatedRelationships = project.blueprint.relationships.map((rel: any) => ({
+        ...rel,
+        character_from: nameMap.get(rel.character_from) || rel.character_from,
+        character_to: nameMap.get(rel.character_to) || rel.character_to
+      }))
+      payload.relationships = updatedRelationships
+    }
+  }
+
+  // 如果修改了章节大纲，检查是否有已生成的章节
+  if (field === 'chapter_outline' && project.chapters && project.chapters.length > 0) {
+    const hasGeneratedChapters = project.chapters.some(ch => ch.content)
+    if (hasGeneratedChapters) {
+      const confirmed = await globalAlert.showConfirm(
+        '修改章节大纲后，已生成的章节内容可能与新大纲不匹配。\n\n建议在修改大纲后重新生成受影响的章节。\n\n是否继续修改？',
+        '章节大纲修改提示'
+      )
+      if (!confirmed) {
+        isModalOpen.value = false
+        return
+      }
+    }
+  }
+
   try {
     const updatedProject = await NovelAPI.updateBlueprint(project.id, payload)
     novelStore.setCurrentProject(updatedProject)
@@ -640,6 +677,10 @@ const handleSave = async (data: { field: string; content: any }) => {
     await loadSection(sectionToReload, true)
     if (sectionToReload !== 'overview') {
       await loadSection('overview', true)
+    }
+    // 如果修改了角色且同步更新了关系，也重新加载关系section
+    if (field === 'characters' && payload.relationships) {
+      await loadSection('relationships', true)
     }
     isModalOpen.value = false
   } catch (error) {
@@ -686,6 +727,28 @@ const saveNewChapter = async () => {
     isAddChapterModalOpen.value = false
   } catch (error) {
     console.error('新增章节失败:', error)
+  }
+}
+
+const editProjectTitle = async () => {
+  await ensureProjectLoaded()
+  const project = novel.value
+  if (!project) return
+
+  // 使用原生prompt获取用户输入
+  const newTitle = prompt('请输入新的项目标题：', project.title)
+
+  if (newTitle && newTitle.trim() && newTitle !== project.title) {
+    try {
+      const updatedProject = await NovelAPI.updateProject(project.id, { title: newTitle.trim() })
+      novelStore.setCurrentProject(updatedProject)
+      overviewMeta.title = updatedProject.title
+      await loadSection('overview', true)
+      globalAlert.showSuccess('项目标题已更新')
+    } catch (error) {
+      console.error('更新项目标题失败:', error)
+      globalAlert.showError('更新项目标题失败')
+    }
   }
 }
 

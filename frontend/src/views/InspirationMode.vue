@@ -111,6 +111,7 @@
         :ai-message="confirmationMessage"
         @blueprint-generated="handleBlueprintGenerated"
         @back="backToConversation"
+        @restart-conversation="handleRestartConversation"
       />
 
       <!-- 大纲展示界面 -->
@@ -122,6 +123,7 @@
         @confirm="handleConfirmBlueprint"
         @regenerate="handleRegenerateBlueprint"
         @refine="handleRefineBlueprint"
+        @restart-conversation="handleRestartConversation"
       />
     </div>
   </div>
@@ -209,6 +211,27 @@ const backToConversation = () => {
   showBlueprintConfirmation.value = false
 }
 
+// 处理从蓝图确认页面重新开始灵感对话
+const handleRestartConversation = async () => {
+  const project = novelStore.currentProject
+  if (!project) return
+
+  // 根据项目是否有章节给出不同的警告
+  const hasChapters = project.chapters && project.chapters.length > 0
+  const warningMessage = hasChapters
+    ? `项目"${project.title}"已有 ${project.chapters.length} 个章节。\n\n重新调整蓝图后，您可能需要重新生成章节大纲，现有章节内容可能与新蓝图不匹配。\n\n是否从头开始重新对话？\n\n• 选择"确定"：清空对话历史，从头开始\n• 选择"取消"：留在当前页面`
+    : `项目"${project.title}"已完成灵感阶段。\n\n是否从头开始重新对话？\n\n• 选择"确定"：清空对话历史，从头开始\n• 选择"取消"：留在当前页面`
+
+  const confirmed = await globalAlert.showConfirm(warningMessage, '重新进行灵感对话')
+
+  if (!confirmed) {
+    return
+  }
+
+  // 用户确认，重置状态，从头开始新对话
+  resetInspirationMode()
+}
+
 const startConversation = async () => {
   // 重置所有状态，开始全新的对话
   resetInspirationMode()
@@ -241,11 +264,54 @@ const restoreConversation = async (projectId: string) => {
       throw new Error('项目不存在')
     }
 
+    // 检查是否为调整蓝图模式（来自详情页的"重新调整蓝图"按钮）
+    const isRefineMode = route.query.refine_mode === 'true'
+
     // 关键检查：灵感模式只处理 draft 状态的项目
     if (project.status !== ProjectStatus.DRAFT) {
+      localStorage.removeItem(STORAGE_KEY)  // 清除缓存
+
+      // 如果是调整蓝图模式，直接显示已生成的蓝图展示页面，不提示
+      if (isRefineMode) {
+        // 确保项目有蓝图
+        if (!project.blueprint) {
+          globalAlert.showError('该项目还没有蓝图，请先完成灵感对话', '无法调整蓝图')
+          router.push(`/novel/${projectId}`)
+          return
+        }
+
+        // 设置状态直接显示蓝图展示页面（BlueprintDisplay）
+        conversationStarted.value = true
+        showBlueprint.value = true
+        completedBlueprint.value = project.blueprint
+        blueprintMessage.value = '您可以选择优化蓝图、重新生成，或者点击下方按钮重新进行灵感对话。'
+
+        // 加载现有对话历史（如果有）
+        if (project.conversation_history) {
+          chatMessages.value = project.conversation_history.map((item): ChatMessage | null => {
+            if (item.role === 'user') {
+              try {
+                const userInput = JSON.parse(item.content)
+                return { content: userInput.value, type: 'user' }
+              } catch {
+                return { content: item.content, type: 'user' }
+              }
+            } else { // assistant
+              try {
+                const assistantOutput = JSON.parse(item.content)
+                return { content: assistantOutput.ai_message, type: 'ai' }
+              } catch {
+                return { content: item.content, type: 'ai' }
+              }
+            }
+          }).filter((msg): msg is ChatMessage => msg !== null && msg.content !== null)
+        }
+
+        return
+      }
+
       // 项目已完成灵感阶段，用户想重新调整蓝图
       console.warn('项目状态为', project.status, '，用户尝试重新调整蓝图')
-      localStorage.removeItem(STORAGE_KEY)  // 清除缓存
 
       // 根据项目是否有章节给出不同的警告
       const hasChapters = project.chapters && project.chapters.length > 0

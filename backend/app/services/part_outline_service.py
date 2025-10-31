@@ -151,6 +151,8 @@ class PartOutlineService:
         user_id: int,
         total_chapters: int,
         chapters_per_part: int = 25,
+        optimization_prompt: Optional[str] = None,
+        skip_status_update: bool = False,
     ) -> PartOutlineGenerationProgress:
         """
         生成部分大纲（大纲的大纲）
@@ -160,11 +162,14 @@ class PartOutlineService:
             user_id: 用户ID
             total_chapters: 总章节数
             chapters_per_part: 每个部分包含的章节数（默认25章）
+            optimization_prompt: 可选的优化提示词，用于引导AI生成符合预期的部分大纲
+            skip_status_update: 是否跳过状态更新（重新生成时使用）
 
         返回：
             PartOutlineGenerationProgress: 生成进度和结果
         """
-        logger.info("开始为项目 %s 生成部分大纲，总章节数=%d", project_id, total_chapters)
+        logger.info("开始为项目 %s 生成部分大纲，总章节数=%d，优化提示词=%s，跳过状态更新=%s",
+                   project_id, total_chapters, optimization_prompt or "无", skip_status_update)
 
         # 检查章节数是否需要分部分
         if total_chapters <= 50:
@@ -211,6 +216,7 @@ class PartOutlineService:
             world_setting=world_setting,
             characters=characters,
             full_synopsis=full_synopsis,
+            optimization_prompt=optimization_prompt,
         )
 
         # 调用LLM生成部分大纲
@@ -267,10 +273,13 @@ class PartOutlineService:
 
         logger.info("成功生成 %d 个部分大纲", len(part_outlines))
 
-        # 更新项目状态为部分大纲完成
-        novel_service = NovelService(self.session)
-        await novel_service.transition_project_status(project, ProjectStatus.PART_OUTLINES_READY.value)
-        logger.info("项目 %s 状态已更新为 %s", project_id, ProjectStatus.PART_OUTLINES_READY.value)
+        # 更新项目状态为部分大纲完成（仅在首次生成时）
+        if not skip_status_update:
+            novel_service = NovelService(self.session)
+            await novel_service.transition_project_status(project, ProjectStatus.PART_OUTLINES_READY.value)
+            logger.info("项目 %s 状态已更新为 %s", project_id, ProjectStatus.PART_OUTLINES_READY.value)
+        else:
+            logger.info("跳过状态更新（重新生成模式）")
 
         # 返回进度信息
         return PartOutlineGenerationProgress(
@@ -537,9 +546,10 @@ class PartOutlineService:
         world_setting: Dict,
         characters: List[Dict],
         full_synopsis: str,
+        optimization_prompt: Optional[str] = None,
     ) -> str:
         """构建生成部分大纲的用户提示词"""
-        return f"""请基于以下信息，为这部长篇小说生成分层的部分大纲（大纲的大纲）。
+        base_prompt = f"""请基于以下信息，为这部长篇小说生成分层的部分大纲（大纲的大纲）。
 
 ## 小说基本信息
 
@@ -557,7 +567,19 @@ class PartOutlineService:
 
 ## 主要剧情
 
-{full_synopsis}
+{full_synopsis}"""
+
+        # 如果有优化提示词，添加到提示中
+        if optimization_prompt:
+            base_prompt += f"""
+
+## 优化方向
+
+用户要求：{optimization_prompt}
+
+请在生成部分大纲时，特别注意用户的优化方向，确保生成的内容符合这些要求。"""
+
+        base_prompt += f"""
 
 ## 输出要求
 
@@ -594,6 +616,8 @@ class PartOutlineService:
   ]
 }}
 """
+
+        return base_prompt
 
     async def _build_part_chapters_prompt(
         self,

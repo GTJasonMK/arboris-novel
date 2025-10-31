@@ -72,9 +72,15 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useNovelStore } from '@/stores/novel'
 import { NovelAPI } from '@/api/novel'
+import {
+  GenerationType,
+  markGenerationStart,
+  markGenerationComplete,
+  isGenerating as checkIsGenerating
+} from '@/utils/generationState'
 
 interface Props {
   projectId: string
@@ -99,12 +105,20 @@ const generateChapterOutlines = async () => {
   isGenerating.value = true
   error.value = null
   successMessage.value = null
+
+  // 标记生成开始（状态持久化）
+  markGenerationStart(GenerationType.CHAPTER_OUTLINE, props.projectId)
+
   try {
     const result = await NovelAPI.generateAllChapterOutlines(props.projectId)
     successMessage.value = result.message
 
     // 重新加载项目数据以获取最新的章节大纲
     await novelStore.loadProject(props.projectId)
+
+    // 标记生成完成
+    markGenerationComplete(GenerationType.CHAPTER_OUTLINE, props.projectId)
+    isGenerating.value = false
 
     // 3秒后清除成功消息
     setTimeout(() => {
@@ -113,10 +127,26 @@ const generateChapterOutlines = async () => {
   } catch (err) {
     error.value = err instanceof Error ? err.message : '生成章节大纲失败'
     console.error('生成章节大纲失败:', err)
-  } finally {
+    markGenerationComplete(GenerationType.CHAPTER_OUTLINE, props.projectId)
     isGenerating.value = false
   }
 }
+
+// 组件挂载时检查是否有未完成的生成状态
+onMounted(() => {
+  // 如果已经有章节大纲，清除可能存在的生成状态
+  if (hasChapterOutlines.value) {
+    markGenerationComplete(GenerationType.CHAPTER_OUTLINE, props.projectId)
+    return
+  }
+
+  // 检查是否正在生成
+  const { generating, elapsed } = checkIsGenerating(GenerationType.CHAPTER_OUTLINE, props.projectId, 5 * 60 * 1000)
+  if (generating) {
+    console.log(`恢复章节大纲生成状态（已等待 ${elapsed}ms）`)
+    isGenerating.value = true
+  }
+})
 </script>
 
 <script lang="ts">

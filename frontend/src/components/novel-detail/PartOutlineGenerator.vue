@@ -8,7 +8,7 @@
     </div>
 
     <!-- 生成部分大纲按钮区域 -->
-    <div v-if="!partOutlines || partOutlines.length === 0" class="bg-gradient-to-r from-indigo-50 to-purple-50 rounded-2xl border border-indigo-200 p-8 text-center">
+    <div v-if="showGenerationArea" class="bg-gradient-to-r from-indigo-50 to-purple-50 rounded-2xl border border-indigo-200 p-8 text-center">
       <div class="max-w-2xl mx-auto">
         <div class="w-16 h-16 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-full flex items-center justify-center mx-auto mb-4">
           <svg class="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -143,29 +143,88 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted, watch } from 'vue'
 import { useNovelStore } from '@/stores/novel'
+import { NovelAPI } from '@/api/novel'
 import type { PartOutline } from '@/api/novel'
+import {
+  GenerationType,
+  markGenerationStart,
+  markGenerationComplete,
+  isGenerating as checkIsGenerating
+} from '@/utils/generationState'
 
 interface Props {
   projectId: string
+  partOutlines?: PartOutline[]
+  totalChapters?: number
+  chaptersPerPart?: number
 }
 
-const props = defineProps<Props>()
+const props = withDefaults(defineProps<Props>(), {
+  partOutlines: () => [],
+  totalChapters: 0,
+  chaptersPerPart: 25
+})
+
+const emit = defineEmits<{
+  (e: 'refresh'): void
+}>()
 
 const novelStore = useNovelStore()
 const isGenerating = ref(false)
 const error = ref<string | null>(null)
 let pollingTimer: ReturnType<typeof setInterval> | null = null
 
-const project = computed(() => novelStore.currentProject)
-const totalChapters = computed(() => project.value?.blueprint?.total_chapters || 0)
-const chaptersPerPart = computed(() => project.value?.blueprint?.chapters_per_part || 25)
-const partOutlines = computed(() => project.value?.blueprint?.part_outlines || [])
+// 使用本地响应式数据存储最新的 partOutlines（用于轮询更新）
+const localPartOutlines = ref<PartOutline[]>(props.partOutlines || [])
+
+// 使用 computed 优先使用本地数据，如果本地数据为空则使用 props
+const partOutlines = computed(() => localPartOutlines.value.length > 0 ? localPartOutlines.value : props.partOutlines || [])
+const totalChapters = computed(() => props.totalChapters || 0)
+const chaptersPerPart = computed(() => props.chaptersPerPart || 25)
 const totalParts = computed(() => partOutlines.value.length)
 
-// localStorage key for tracking generation status
-const getStorageKey = () => `part_outline_generating_${props.projectId}`
+// 监听 props 变化，更新本地数据
+watch(() => props.partOutlines, (newValue) => {
+  console.log('[PartOutlineGenerator] props.partOutlines 变化:', newValue?.map(p => `${p.part_number}:${p.generation_status}`))
+
+  if (newValue && newValue.length > 0) {
+    localPartOutlines.value = newValue
+
+    // 只要 part_outlines 存在，就说明部分大纲生成已完成
+    // status='pending' 表示章节待生成，不是部分大纲待生成
+    const { generating } = checkIsGenerating(GenerationType.PART_OUTLINE, props.projectId)
+    if (generating) {
+      console.log('[PartOutlineGenerator] 检测到部分大纲已生成，清除生成状态')
+      markGenerationComplete(GenerationType.PART_OUTLINE, props.projectId)
+      isGenerating.value = false
+    }
+  } else {
+    console.log('[PartOutlineGenerator] props.partOutlines 为空或 length=0')
+  }
+}, { immediate: true, deep: true })
+
+// 控制生成区域是否显示
+const showGenerationArea = computed(() => {
+  // 没有部分大纲时显示
+  if (!partOutlines.value || partOutlines.value.length === 0) {
+    console.log('[PartOutlineGenerator] showGenerationArea: true (无部分大纲)')
+    return true
+  }
+
+  // 正在生成时显示（即使已有 part_outlines 记录）
+  if (isGenerating.value) {
+    console.log('[PartOutlineGenerator] showGenerationArea: true (正在生成)')
+    return true
+  }
+
+  // 重要：status='pending' 表示部分大纲已生成，但章节还未生成
+  // 只要 part_outlines 存在（无论状态如何），就说明部分大纲已完成
+  console.log('[PartOutlineGenerator] showGenerationArea: false (部分大纲已生成)')
+  console.log('[PartOutlineGenerator] 当前状态:', partOutlines.value.map(p => `${p.part_number}:${p.generation_status}`))
+  return false
+})
 
 // Start polling to check generation status
 const startPolling = () => {
@@ -183,12 +242,36 @@ const startPolling = () => {
       isGenerating.value = false
       localStorage.removeItem(getStorageKey())
       error.value = "生成超时，请刷新页面查看状态或重新生成"
-      console.error('部分大纲生成超时')
+      console.error('[PartOutlineGenerator] 部分大纲生成超时')
       return
     }
 
     try {
-      await novelStore.loadProject(props.projectId, true) // force reload
+      // 直接调用 API 获取最新的 section 数据
+      const response = await NovelAPI.getSection(props.projectId, 'chapter_outline')
+      const sectionData = response.data
+
+      // 更新本地 partOutlines 数据
+      if (sectionData && sectionData.part_outlines) {
+        localPartOutlines.value = sectionData.part_outlines
+        console.log('[PartOutlineGenerator] 轮询更新 part_outlines，当前状态:', sectionData.part_outlines.map((p: PartOutline) => `${p.part_number}:${p.generation_status}`))
+      } else {
+        console.log('[PartOutlineGenerator] 轮询返回空 part_outlines')
+      }
+
+      // 如果 part_outlines 为空或不存在，说明生成还未开始或已被删除，停止轮询
+      if (!sectionData.part_outlines || sectionData.part_outlines.length === 0) {
+        // 已经轮询了几次但还是空，说明生成失败或被取消
+        if (pollCount > 2) {
+          console.log('[PartOutlineGenerator] 连续轮询发现 part_outlines 为空，停止轮询')
+          stopPolling()
+          isGenerating.value = false
+          localStorage.removeItem(getStorageKey())
+          return
+        }
+        // 前2次可能是生成刚启动，继续等待
+        return
+      }
 
       // 检查是否有失败的部分
       const hasFailed = partOutlines.value.some(p => p.generation_status === 'failed')
@@ -200,7 +283,7 @@ const startPolling = () => {
         isGenerating.value = false
         localStorage.removeItem(getStorageKey())
         error.value = "所有部分生成失败，请检查后重试"
-        console.error('所有部分大纲生成失败')
+        console.error('[PartOutlineGenerator] 所有部分大纲生成失败')
         return
       }
 
@@ -210,13 +293,14 @@ const startPolling = () => {
         stopPolling()
         isGenerating.value = false
         localStorage.removeItem(getStorageKey())
-        
+        console.log('[PartOutlineGenerator] 部分大纲生成完成')
+
         if (hasFailed) {
           error.value = "部分大纲生成完成，但部分失败，请检查失败的部分"
         }
       }
     } catch (err) {
-      console.error('轮询项目状态失败:', err)
+      console.error('[PartOutlineGenerator] 轮询项目状态失败:', err)
       // 网络错误不立即停止，继续重试
     }
   }, 5000) // Poll every 5 seconds
@@ -232,12 +316,29 @@ const stopPolling = () => {
 
 // Check if generation is in progress on mount
 onMounted(() => {
-  const generatingFlag = localStorage.getItem(getStorageKey())
+  console.log('[PartOutlineGenerator] onMounted')
+  console.log('[PartOutlineGenerator] 初始 partOutlines:', partOutlines.value?.map(p => `${p.part_number}:${p.generation_status}`))
+  console.log('[PartOutlineGenerator] 初始 isGenerating:', isGenerating.value)
 
-  if (generatingFlag === 'true' && partOutlines.value.length === 0) {
-    // Generation was in progress, resume status
+  // 如果已有 part_outlines，说明部分大纲已生成，清除任何残留的生成状态
+  if (partOutlines.value && partOutlines.value.length > 0) {
+    const { generating } = checkIsGenerating(GenerationType.PART_OUTLINE, props.projectId)
+    if (generating) {
+      console.log('[PartOutlineGenerator] onMounted: 部分大纲已存在，清除残留的生成状态')
+      markGenerationComplete(GenerationType.PART_OUTLINE, props.projectId)
+    }
+    return
+  }
+
+  // 检查是否有正在进行的生成（仅当没有 part_outlines 时）
+  const { generating, elapsed } = checkIsGenerating(GenerationType.PART_OUTLINE, props.projectId)
+
+  if (generating) {
+    // 恢复生成状态
+    console.log(`[PartOutlineGenerator] onMounted: 恢复生成状态（已等待 ${elapsed}ms）`)
     isGenerating.value = true
-    startPolling()
+  } else {
+    console.log('[PartOutlineGenerator] onMounted: 没有检测到生成中的状态')
   }
 })
 
@@ -250,21 +351,27 @@ const generatePartOutlines = async () => {
   isGenerating.value = true
   error.value = null
 
-  // Mark generation in progress in localStorage
-  localStorage.setItem(getStorageKey(), 'true')
+  // 标记生成开始
+  markGenerationStart(GenerationType.PART_OUTLINE, props.projectId)
 
   try {
+    console.log('[PartOutlineGenerator] 开始调用后端生成部分大纲')
     await novelStore.generatePartOutlines()
-    // Success - clear localStorage
-    localStorage.removeItem(getStorageKey())
+    console.log('[PartOutlineGenerator] 部分大纲生成完成')
+
+    // 生成成功，清除生成状态
+    markGenerationComplete(GenerationType.PART_OUTLINE, props.projectId)
+    isGenerating.value = false
+
+    // 触发刷新事件，通知父组件重新加载数据
+    console.log('[PartOutlineGenerator] 触发 refresh 事件')
+    emit('refresh')
   } catch (err) {
     error.value = err instanceof Error ? err.message : '生成部分大纲失败'
-    console.error('生成部分大纲失败:', err)
-    // On error, also clear localStorage
-    localStorage.removeItem(getStorageKey())
-  } finally {
+    console.error('[PartOutlineGenerator] 生成部分大纲失败:', err)
+    // 失败时清除状态
+    markGenerationComplete(GenerationType.PART_OUTLINE, props.projectId)
     isGenerating.value = false
-    stopPolling()
   }
 }
 

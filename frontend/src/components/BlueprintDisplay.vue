@@ -82,42 +82,59 @@
 
       <div class="prose max-w-none p-6 bg-gray-50 rounded-lg border border-gray-200" v-html="formattedBlueprint"></div>
 
-      <div class="text-center mt-8 flex flex-wrap justify-center gap-3">
-      <button
-        @click="confirmRegenerate"
-        class="bg-gray-200 text-gray-700 font-bold py-3 px-6 rounded-full hover:bg-gray-300 transition-all duration-300 transform hover:scale-105"
-      >
-        <span class="flex items-center justify-center">
-          <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
-            <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"></path>
-          </svg>
-          重新生成
-        </span>
-      </button>
-      <button
-        @click="openRefineDialog"
-        class="bg-gradient-to-r from-indigo-500 to-purple-600 text-white font-bold py-3 px-6 rounded-full hover:from-indigo-600 hover:to-purple-700 transition-all duration-300 transform hover:scale-105 shadow-md hover:shadow-lg"
-      >
-        <span class="flex items-center justify-center">
-          <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
-            <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"></path>
-          </svg>
-          优化蓝图
-        </span>
-      </button>
-      <button
-        @click="confirmBlueprint"
-        :disabled="isSaving"
-        class="bg-gradient-to-r from-green-500 to-emerald-600 text-white font-bold py-3 px-6 rounded-full hover:from-green-600 hover:to-emerald-700 transition-all duration-300 transform hover:scale-105 shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
-      >
-        <span class="flex items-center justify-center">
-          <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
-            <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path>
-          </svg>
-          确认并开始创作
-        </span>
-      </button>
-    </div>
+      <div class="text-center mt-8 space-y-3">
+        <div class="flex flex-wrap justify-center gap-3">
+          <button
+            @click="confirmRegenerate"
+            class="bg-gray-200 text-gray-700 font-bold py-3 px-6 rounded-full hover:bg-gray-300 transition-all duration-300 transform hover:scale-105"
+          >
+            <span class="flex items-center justify-center">
+              <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"></path>
+              </svg>
+              重新生成
+            </span>
+          </button>
+          <button
+            @click="openRefineDialog"
+            class="bg-gradient-to-r from-indigo-500 to-purple-600 text-white font-bold py-3 px-6 rounded-full hover:from-indigo-600 hover:to-purple-700 transition-all duration-300 transform hover:scale-105 shadow-md hover:shadow-lg"
+          >
+            <span class="flex items-center justify-center">
+              <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zM11.379 5.793L3 14.172V17h2.828l8.38-8.379-2.83-2.828z"></path>
+              </svg>
+              优化蓝图
+            </span>
+          </button>
+          <button
+            @click="confirmBlueprint"
+            :disabled="isSaving"
+            class="bg-gradient-to-r from-green-500 to-emerald-600 text-white font-bold py-3 px-6 rounded-full hover:from-green-600 hover:to-emerald-700 transition-all duration-300 transform hover:scale-105 shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none"
+          >
+            <span class="flex items-center justify-center">
+              <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"></path>
+              </svg>
+              确认并开始创作
+            </span>
+          </button>
+        </div>
+
+        <!-- 重新进行灵感对话按钮 -->
+        <div class="pt-2">
+          <button
+            @click="emit('restartConversation')"
+            class="text-sm text-gray-600 hover:text-indigo-600 font-medium py-2 px-4 rounded-lg hover:bg-indigo-50 transition-all duration-200"
+          >
+            <span class="flex items-center justify-center">
+              <svg class="w-4 h-4 mr-1.5" fill="currentColor" viewBox="0 0 20 20">
+                <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"></path>
+              </svg>
+              重新进行灵感对话
+            </span>
+          </button>
+        </div>
+      </div>
     </div>
 
     <!-- 优化蓝图对话框 -->
@@ -217,6 +234,7 @@ const emit = defineEmits<{
   confirm: []
   regenerate: []
   refine: [instruction: string]
+  restartConversation: []
 }>()
 
 const isSaving = ref(false)

@@ -1,13 +1,20 @@
 # IDE 配置
 /.vscode
 /frontend/.vscode
+.idea/
+*.swp
+*.swo
+*~
 
 # Python 虚拟环境
 /backend/.venv
+/backend/venv
+/backend/env
 
 # 依赖
 /frontend/node_modules
 /backend/dist
+/frontend/dist
 
 # Python 缓存
 __pycache__/
@@ -16,11 +23,18 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # 数据库和日志
 /backend/storage/*.db
 /backend/storage/*.log
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.log
 
 # 环境变量文件
 .env
@@ -32,6 +46,41 @@ __pycache__/
 
 # 保留 .env.example
 !.env.example
+!backend/.env.example
+!deploy/.env.example
 
 # Claude Code 临时文件
 .codex/
+.claude/
+
+# 前端构建产物
+/frontend/.cache
+/frontend/build
+/frontend/.nuxt
+/frontend/.output
+/frontend/.vercel
+
+# 测试覆盖率
+coverage/
+.coverage
+htmlcov/
+*.cover
+
+# 操作系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 临时文件
+*.tmp
+*.bak
+*.backup
+*.orig
+
+# 用户上传的文件（如果有）
+/uploads/
+/backend/uploads/
+
+# 本地配置
+local_settings.py
+

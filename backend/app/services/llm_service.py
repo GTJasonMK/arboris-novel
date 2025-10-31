@@ -13,7 +13,7 @@ from ..repositories.user_repository import UserRepository
 from ..services.admin_setting_service import AdminSettingService
 from ..services.prompt_service import PromptService
 from ..services.usage_service import UsageService
-from ..utils.llm_tool import ChatMessage, LLMClient
+from ..utils.llm_tool import ChatMessage, ContentCollectMode, LLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -121,16 +121,9 @@ class LLMService:
 
         for attempt in range(max_retries + 1):
             try:
-                # 使用浏览器头模拟，避免被 Cloudflare 等防护拦截（与测试配置保持一致）
-                client = LLMClient(
-                    api_key=config["api_key"],
-                    base_url=config.get("base_url"),
-                    simulate_browser=True
-                )
-                chat_messages = [ChatMessage(role=msg["role"], content=msg["content"]) for msg in messages]
-
-                full_response = ""
-                finish_reason = None
+                # 使用工厂方法创建客户端，统一配置浏览器模拟
+                client = LLMClient.create_from_config(config, simulate_browser=True)
+                chat_messages = ChatMessage.from_list(messages)
 
                 if attempt > 0:
                     logger.warning(
@@ -149,29 +142,29 @@ class LLMService:
                         max_tokens,
                     )
 
-                async for part in client.stream_chat(
+                # 使用统一的流式收集方法
+                # 对于结构化输出（如蓝图生成），只收集最终答案，忽略思考过程以避免JSON解析错误
+                result = await client.stream_and_collect(
                     messages=chat_messages,
                     model=config.get("model"),
                     temperature=temperature,
                     timeout=int(timeout),
                     response_format=response_format,
                     max_tokens=max_tokens,
-                ):
-                    if part.get("content"):
-                        full_response += part["content"]
-                    if part.get("finish_reason"):
-                        finish_reason = part["finish_reason"]
+                    collect_mode=ContentCollectMode.CONTENT_ONLY,
+                )
 
                 # 成功完成，跳出重试循环
                 logger.debug(
-                    "LLM response collected: model=%s user_id=%s finish_reason=%s preview=%s",
+                    "LLM response collected: model=%s user_id=%s finish_reason=%s chunks=%d preview=%s",
                     config.get("model"),
                     user_id,
-                    finish_reason,
-                    full_response[:500],
+                    result.finish_reason,
+                    result.chunk_count,
+                    result.content[:500],
                 )
 
-                if finish_reason == "length":
+                if result.finish_reason == "length":
                     logger.warning(
                         "LLM response truncated: model=%s user_id=%s",
                         config.get("model"),
@@ -179,11 +172,12 @@ class LLMService:
                     )
                     raise HTTPException(status_code=500, detail="AI 响应被截断，请缩短输入或调整参数")
 
-                if not full_response:
+                if not result.content:
                     logger.error(
-                        "LLM returned empty response: model=%s user_id=%s",
+                        "LLM returned empty response: model=%s user_id=%s chunks=%d",
                         config.get("model"),
                         user_id,
+                        result.chunk_count,
                     )
                     raise HTTPException(status_code=500, detail="AI 未返回有效内容")
 
@@ -192,13 +186,14 @@ class LLMService:
                     await self.usage_service.increment("api_request_count")
 
                 logger.info(
-                    "LLM response success: model=%s user_id=%s chars=%d attempts=%d",
+                    "LLM response success: model=%s user_id=%s chars=%d chunks=%d attempts=%d",
                     config.get("model"),
                     user_id,
-                    len(full_response),
+                    len(result.content),
+                    result.chunk_count,
                     attempt + 1,
                 )
-                return full_response
+                return result.content
 
             except InternalServerError as exc:
                 detail = "AI 服务内部错误，请稍后重试"

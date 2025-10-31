@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..models import LLMConfig
 from ..repositories.llm_config_repository import LLMConfigRepository
 from ..schemas.llm_config import LLMConfigCreate, LLMConfigRead, LLMConfigUpdate, LLMConfigTestResponse
-from ..utils.llm_tool import ChatMessage, LLMClient
+from ..utils.llm_tool import ChatMessage, ContentCollectMode, LLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -141,44 +141,52 @@ class LLMConfigService:
         try:
             start_time = time.time()
 
-            # 创建测试用的 LLM 客户端
-            # 重要：使用严格模式和浏览器模拟，确保不回退到环境变量且能绕过 Cloudflare
-            test_api_key = api_key
-            test_base_url = config.llm_provider_url.strip() if config.llm_provider_url and config.llm_provider_url.strip() else None
-            test_model = config.llm_provider_model.strip() if config.llm_provider_model and config.llm_provider_model.strip() else "gpt-3.5-turbo"
+            # 准备测试配置
+            test_config = {
+                "api_key": api_key,
+                "base_url": config.llm_provider_url.strip() if config.llm_provider_url and config.llm_provider_url.strip() else None,
+                "model": config.llm_provider_model.strip() if config.llm_provider_model and config.llm_provider_model.strip() else "gpt-3.5-turbo",
+            }
 
             logger.info("测试配置 %s: api_key长度=%d, base_url=%s, model=%s",
-                       config.config_name, len(test_api_key), test_base_url, test_model)
+                       config.config_name, len(api_key), test_config["base_url"], test_config["model"])
 
-            client = LLMClient(
-                api_key=test_api_key,
-                base_url=test_base_url,
+            # 使用工厂方法创建客户端
+            client = LLMClient.create_from_config(
+                test_config,
                 strict_mode=True,  # 启用严格模式，不回退到环境变量
                 simulate_browser=True,  # 启用浏览器模拟，绕过 Cloudflare 检测
             )
 
-            # 发送简单的测试请求
+            # 发送简单的测试请求，并使用统一的流式收集方法
             messages = [ChatMessage(role="user", content="测试连接，请回复'连接成功'")]
 
-            response_text = ""
-            chunk_count = 0
-            async for chunk in client.stream_chat(
+            logger.info("开始流式请求测试: base_url=%s, model=%s", test_config["base_url"], test_config["model"])
+
+            # 使用 WITH_REASONING 模式，兼容 DeepSeek R1 等模型
+            result = await client.stream_and_collect(
                 messages=messages,
-                model=test_model,
+                model=test_config["model"],
                 temperature=0.1,
                 max_tokens=50,
-                timeout=30,  # 测试超时30秒
-            ):
-                if chunk.get("content"):
-                    response_text += chunk["content"]
-                chunk_count += 1
+                timeout=30,
+                collect_mode=ContentCollectMode.WITH_REASONING,
+                log_chunks=True,  # 记录前3个chunk用于调试
+            )
 
             end_time = time.time()
             response_time_ms = (end_time - start_time) * 1000
 
-            # 检查是否收到了有效响应
-            if chunk_count == 0 or not response_text.strip():
-                raise ValueError("未收到有效响应，可能 API Key 或 Base URL 配置错误")
+            logger.info("流式请求完成: chunk_count=%d, content_length=%d, reasoning_length=%d",
+                       result.chunk_count, len(result.content), len(result.reasoning))
+
+            # 检查是否收到了有效响应（content或reasoning任一非空即可）
+            total_content = result.content.strip() + result.reasoning.strip()
+            if result.chunk_count == 0 or not total_content:
+                error_msg = f"未收到有效响应 (chunks={result.chunk_count}, content_len={len(result.content)}, reasoning_len={len(result.reasoning)})"
+                if test_config["base_url"] and not test_config["base_url"].endswith('/v1'):
+                    error_msg += "。提示：Base URL 可能缺少 /v1 后缀"
+                raise ValueError(error_msg)
 
             # 更新配置的测试状态
             await self.repo.update_fields(

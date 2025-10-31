@@ -19,9 +19,13 @@
         <h3 class="text-lg font-semibold text-gray-800">已发布内容</h3>
         <button
           @click="confirmRegenerate"
-          class="px-4 py-2 bg-indigo-100 text-indigo-700 rounded hover:bg-indigo-200 transition-colors"
+          :disabled="isGenerating"
+          class="px-4 py-2 bg-indigo-100 text-indigo-700 rounded hover:bg-indigo-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
         >
-          重新生成版本
+          <svg v-if="isGenerating" class="w-4 h-4 animate-spin" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"></path>
+          </svg>
+          {{ isGenerating ? '生成中...' : '重新生成版本' }}
         </button>
       </div>
 
@@ -36,9 +40,13 @@
         <h3 class="text-lg font-semibold text-gray-800">选择版本</h3>
         <button
           @click="confirmRegenerate"
-          class="px-4 py-2 bg-gray-100 text-gray-700 rounded hover:bg-gray-200 transition-colors"
+          :disabled="isGenerating"
+          class="px-4 py-2 bg-gray-100 text-gray-700 rounded hover:bg-gray-200 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
         >
-          重新生成
+          <svg v-if="isGenerating" class="w-4 h-4 animate-spin" fill="currentColor" viewBox="0 0 20 20">
+            <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"></path>
+          </svg>
+          {{ isGenerating ? '生成中...' : '重新生成' }}
         </button>
       </div>
 
@@ -74,12 +82,16 @@
 
     <!-- 等待生成状态 -->
     <div v-else class="text-center py-12">
-      <div class="text-gray-500 mb-4">点击左侧的"生成"按钮开始创作这一章</div>
+      <div class="text-gray-500 mb-4">{{ isGenerating ? 'AI正在创作中，请稍候...' : '点击下方按钮开始创作这一章' }}</div>
       <button
         @click="confirmRegenerate"
-        class="px-6 py-3 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors"
+        :disabled="isGenerating"
+        class="px-6 py-3 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 mx-auto"
       >
-        开始生成
+        <svg v-if="isGenerating" class="w-5 h-5 animate-spin" fill="currentColor" viewBox="0 0 20 20">
+          <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd"></path>
+        </svg>
+        {{ isGenerating ? '生成中...' : '开始生成' }}
       </button>
     </div>
   </div>
@@ -93,9 +105,10 @@ interface Props {
   chapter: Chapter | null
   chapterOutline: ChapterOutline | null
   generationResult: ChapterGenerationResponse | null
+  isGenerating?: boolean
 }
 
-defineProps<Props>()
+const props = defineProps<Props>()
 
 const emit = defineEmits<{
   selectVersion: [versionIndex: number]

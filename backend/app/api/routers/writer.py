@@ -19,7 +19,6 @@ from ...schemas.novel import (
     EditChapterRequest,
     EvaluateChapterRequest,
     GenerateChapterRequest,
-    GenerateOutlineRequest,
     GeneratePartOutlinesRequest,
     GeneratePartChaptersRequest,
     BatchGenerateChaptersRequest,
@@ -28,6 +27,10 @@ from ...schemas.novel import (
     RetryVersionRequest,
     SelectVersionRequest,
     UpdateChapterOutlineRequest,
+    GenerateChapterOutlinesByCountRequest,
+    DeleteLatestChapterOutlinesRequest,
+    RegenerateChapterOutlineRequest,
+    RegeneratePartOutlinesRequest,
 )
 from ...schemas.user import UserInDB
 from ...services.chapter_context_service import ChapterContextService
@@ -54,14 +57,53 @@ async def _load_project_schema(service: NovelService, project_id: str, user_id: 
     return await service.get_project_schema(project_id, user_id)
 
 
-def _extract_tail_excerpt(text: Optional[str], limit: int = 500) -> str:
-    """截取章节结尾文本，默认保留 500 字。"""
+def _extract_tail_excerpt(text: Optional[str], limit: int = 1000) -> str:
+    """截取章节结尾文本，默认保留 1000 字。"""
     if not text:
         return ""
     stripped = text.strip()
     if len(stripped) <= limit:
         return stripped
     return stripped[-limit:]
+
+
+def _build_layered_summary(completed_chapters: List[Dict], current_chapter_number: int) -> str:
+    """
+    构建分层摘要：
+    - 最近10章：完整摘要（每章50-100字）
+    - 其余章节：超简摘要（每章1句话，约20字）
+
+    这样既保证了完整的前情脉络，又控制了token消耗。
+    """
+    if not completed_chapters:
+        return "暂无前情摘要"
+
+    recent_threshold = max(1, current_chapter_number - 10)
+    recent_summaries = []
+    old_summaries = []
+
+    for ch in completed_chapters:
+        chapter_num = ch['chapter_number']
+        title = ch['title']
+        summary = ch['summary']
+
+        if chapter_num >= recent_threshold:
+            # 最近10章：完整摘要
+            recent_summaries.append(f"- 第{chapter_num}章《{title}》：{summary}")
+        else:
+            # 早期章节：只保留第一句话作为超简摘要
+            brief = summary.split('。')[0] if summary else title
+            if len(brief) > 30:
+                brief = brief[:30] + '...'
+            old_summaries.append(f"- 第{chapter_num}章：{brief}")
+
+    result_parts = []
+    if old_summaries:
+        result_parts.append("【早期章节】\n" + "\n".join(old_summaries))
+    if recent_summaries:
+        result_parts.append("【最近章节（详细）】\n" + "\n".join(recent_summaries))
+
+    return "\n\n".join(result_parts) if result_parts else "暂无前情摘要"
 
 
 @router.post("/novels/{project_id}/chapters/generate", response_model=NovelProjectSchema)
@@ -215,20 +257,19 @@ async def generate_chapter(
     # print("rag_context:",rag_context)
     # 将蓝图、前情、RAG 检索结果拼装成结构化段落，供模型理解
     blueprint_text = json.dumps(blueprint_dict, ensure_ascii=False, indent=2)
-    completed_lines = [
-        f"- 第{item['chapter_number']}章 - {item['title']}:{item['summary']}"
-        for item in completed_chapters
-    ]
+
+    # 使用分层摘要策略：最近10章完整摘要，早期章节超简摘要
+    completed_section = _build_layered_summary(completed_chapters, request.chapter_number)
+
     previous_summary_text = previous_summary_text or "暂无可用摘要"
     previous_tail_excerpt = previous_tail_excerpt or "暂无上一章结尾内容"
-    completed_section = "\n".join(completed_lines) if completed_lines else "暂无前情摘要"
     rag_chunks_text = "\n\n".join(rag_context.chunk_texts()) if rag_context.chunks else "未检索到章节片段"
     rag_summaries_text = "\n".join(rag_context.summary_lines()) if rag_context.summaries else "未检索到章节摘要"
     writing_notes = request.writing_notes or "无额外写作指令"
 
     prompt_sections = [
         ("[世界蓝图](JSON)", blueprint_text),
-        # ("[前情摘要]", completed_section),
+        ("[前情摘要]", completed_section),  # 已恢复！使用分层摘要
         ("[上一章摘要]", previous_summary_text),
         ("[上一章结尾]", previous_tail_excerpt),
         ("[检索到的剧情上下文](Markdown)", rag_chunks_text),
@@ -262,7 +303,7 @@ async def generate_chapter(
             response = await llm_service.get_llm_response(
                 system_prompt=writer_prompt,
                 conversation_history=[{"role": "user", "content": prompt_input}],
-                temperature=0.9,
+                temperature=0.75,  # 从0.9降低到0.75，平衡创意性与一致性
                 user_id=current_user.id,
                 timeout=600.0,
                 skip_usage_tracking=skip_usage_tracking,
@@ -657,7 +698,7 @@ async def retry_chapter_version(
     response = await llm_service.get_llm_response(
         system_prompt=writer_prompt,
         conversation_history=[{"role": "user", "content": prompt_input}],
-        temperature=0.9,
+        temperature=0.75,  # 从0.9降低到0.75，平衡创意性与一致性
         user_id=current_user.id,
         timeout=600.0,
     )
@@ -734,83 +775,6 @@ async def evaluate_chapter(
     logger.info("项目 %s 第 %s 章评估完成", project_id, request.chapter_number)
 
     return await _load_project_schema(novel_service, project_id, current_user.id)
-
-
-@router.post("/novels/{project_id}/chapters/outline", response_model=NovelProjectSchema)
-async def generate_chapter_outline(
-    project_id: str,
-    request: GenerateOutlineRequest,
-    session: AsyncSession = Depends(get_session),
-    current_user: UserInDB = Depends(get_current_user),
-) -> NovelProjectSchema:
-    novel_service = NovelService(session)
-    prompt_service = PromptService(session)
-    llm_service = LLMService(session)
-
-    await novel_service.ensure_project_owner(project_id, current_user.id)
-    logger.info(
-        "用户 %s 请求生成项目 %s 的章节大纲，起始章节 %s，数量 %s",
-        current_user.id,
-        project_id,
-        request.start_chapter,
-        request.num_chapters,
-    )
-    outline_prompt = await prompt_service.get_prompt("outline")
-    if not outline_prompt:
-        logger.error("缺少大纲提示词，项目 %s 大纲生成失败", project_id)
-        raise HTTPException(status_code=500, detail="缺少大纲提示词")
-
-    project_schema = await novel_service.get_project_schema(project_id, current_user.id)
-    blueprint_dict = project_schema.blueprint.model_dump()
-
-    payload = {
-        "novel_blueprint": blueprint_dict,
-        "wait_to_generate": {
-            "start_chapter": request.start_chapter,
-            "num_chapters": request.num_chapters,
-        },
-    }
-
-    response = await llm_service.get_llm_response(
-        system_prompt=outline_prompt,
-        conversation_history=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
-        temperature=0.7,
-        user_id=current_user.id,
-        timeout=360.0,
-    )
-    normalized = unwrap_markdown_json(remove_think_tags(response))
-    try:
-        data = json.loads(normalized)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=500, detail="章节大纲生成失败") from exc
-
-    new_outlines = data.get("chapters", [])
-    for item in new_outlines:
-        stmt = (
-            select(ChapterOutline)
-            .where(
-                ChapterOutline.project_id == project_id,
-                ChapterOutline.chapter_number == item.get("chapter_number"),
-            )
-        )
-        result = await session.execute(stmt)
-        record = result.scalars().first()
-        if record:
-            record.title = item.get("title", record.title)
-            record.summary = item.get("summary", record.summary)
-        else:
-            session.add(
-                ChapterOutline(
-                    project_id=project_id,
-                    chapter_number=item.get("chapter_number"),
-                    title=item.get("title", ""),
-                    summary=item.get("summary"),
-                )
-            )
-    await session.commit()
-    logger.info("项目 %s 章节大纲生成完成", project_id)
-
-    return await novel_service.get_project_schema(project_id, current_user.id)
 
 
 @router.post("/novels/{project_id}/chapters/update-outline", response_model=NovelProjectSchema)
@@ -958,6 +922,425 @@ async def edit_chapter(
         logger.info("项目 %s 第 %s 章更新内容已同步至向量库", project_id, chapter.chapter_number)
 
     return await novel_service.get_project_schema(project_id, current_user.id)
+
+
+# ------------------------------------------------------------------
+# 章节大纲灵活管理接口（增量生成、删除、重新生成）
+# ------------------------------------------------------------------
+
+
+@router.post("/novels/{project_id}/chapter-outlines/generate-count", response_model=Dict[str, Any])
+async def generate_chapter_outlines_by_count(
+    project_id: str,
+    request: GenerateChapterOutlinesByCountRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    生成指定数量的章节大纲（增量生成）
+
+    用于长篇小说的灵活大纲管理，支持根据需要逐步生成章节大纲，
+    而不需要一次性生成全部。
+
+    Args:
+        project_id: 项目ID
+        request: 包含count（要生成的数量）和start_from（起始章节号，可选）
+
+    Returns:
+        包含生成结果的字典，包括生成的章节号列表和总章节数
+    """
+    novel_service = NovelService(session)
+    prompt_service = PromptService(session)
+    llm_service = LLMService(session)
+
+    await novel_service.ensure_project_owner(project_id, current_user.id)
+
+    # 获取当前最大章节号
+    stmt = (
+        select(ChapterOutline)
+        .where(ChapterOutline.project_id == project_id)
+        .order_by(ChapterOutline.chapter_number.desc())
+    )
+    result = await session.execute(stmt)
+    latest_outline = result.scalars().first()
+
+    # 确定起始章节号
+    if request.start_from is not None:
+        start_chapter = request.start_from
+    else:
+        start_chapter = (latest_outline.chapter_number + 1) if latest_outline else 1
+
+    logger.info(
+        "用户 %s 请求为项目 %s 增量生成章节大纲，起始章节 %s，数量 %s",
+        current_user.id,
+        project_id,
+        start_chapter,
+        request.count,
+    )
+
+    # 获取大纲提示词
+    outline_prompt = await prompt_service.get_prompt("outline")
+    if not outline_prompt:
+        logger.error("缺少大纲提示词，项目 %s 大纲生成失败", project_id)
+        raise HTTPException(status_code=500, detail="缺少大纲提示词")
+
+    # 获取项目蓝图
+    project_schema = await novel_service.get_project_schema(project_id, current_user.id)
+    blueprint_dict = project_schema.blueprint.model_dump()
+
+    # 准备LLM请求payload
+    payload = {
+        "novel_blueprint": blueprint_dict,
+        "wait_to_generate": {
+            "start_chapter": start_chapter,
+            "num_chapters": request.count,
+        },
+    }
+
+    # 调用LLM生成大纲
+    response = await llm_service.get_llm_response(
+        system_prompt=outline_prompt,
+        conversation_history=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+        temperature=0.7,
+        user_id=current_user.id,
+        timeout=360.0,
+    )
+
+    # 解析LLM响应
+    normalized = unwrap_markdown_json(remove_think_tags(response))
+    try:
+        data = json.loads(normalized)
+    except json.JSONDecodeError as exc:
+        logger.error("章节大纲生成失败，JSON解析错误: %s", exc)
+        raise HTTPException(status_code=500, detail="章节大纲生成失败") from exc
+
+    # 保存生成的章节大纲
+    new_outlines = data.get("chapters", [])
+    generated_chapters = []
+
+    for item in new_outlines:
+        chapter_number = item.get("chapter_number")
+        if not chapter_number:
+            continue
+
+        stmt = (
+            select(ChapterOutline)
+            .where(
+                ChapterOutline.project_id == project_id,
+                ChapterOutline.chapter_number == chapter_number,
+            )
+        )
+        result = await session.execute(stmt)
+        record = result.scalars().first()
+
+        if record:
+            # 更新已存在的大纲
+            record.title = item.get("title", record.title)
+            record.summary = item.get("summary", record.summary)
+        else:
+            # 创建新大纲
+            session.add(
+                ChapterOutline(
+                    project_id=project_id,
+                    chapter_number=chapter_number,
+                    title=item.get("title", ""),
+                    summary=item.get("summary", ""),
+                )
+            )
+        generated_chapters.append(chapter_number)
+
+    await session.commit()
+    logger.info("项目 %s 成功生成 %d 章大纲", project_id, len(generated_chapters))
+
+    # 获取当前总章节数
+    stmt = select(ChapterOutline).where(ChapterOutline.project_id == project_id)
+    result = await session.execute(stmt)
+    total_chapters = len(result.scalars().all())
+
+    return {
+        "message": f"成功生成{len(generated_chapters)}章大纲",
+        "generated_chapters": generated_chapters,
+        "total_chapters": total_chapters,
+    }
+
+
+@router.delete("/novels/{project_id}/chapter-outlines/delete-latest", response_model=Dict[str, Any])
+async def delete_latest_chapter_outlines(
+    project_id: str,
+    request: DeleteLatestChapterOutlinesRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    删除最新的N章大纲
+
+    用于灵活调整章节大纲，当用户对最新生成的章节大纲不满意时，
+    可以删除后重新生成。
+
+    Args:
+        project_id: 项目ID
+        request: 包含count（要删除的数量）
+
+    Returns:
+        包含删除结果的字典，包括删除的章节号列表
+    """
+    novel_service = NovelService(session)
+    await novel_service.ensure_project_owner(project_id, current_user.id)
+
+    # 获取当前最大章节号
+    stmt = (
+        select(ChapterOutline)
+        .where(ChapterOutline.project_id == project_id)
+        .order_by(ChapterOutline.chapter_number.desc())
+    )
+    result = await session.execute(stmt)
+    all_outlines = result.scalars().all()
+
+    if not all_outlines:
+        raise HTTPException(status_code=404, detail="当前项目没有章节大纲")
+
+    max_chapter_number = all_outlines[0].chapter_number
+
+    # 验证删除数量
+    if request.count > len(all_outlines):
+        raise HTTPException(
+            status_code=400,
+            detail=f"删除数量({request.count})超过现有章节数({len(all_outlines)})"
+        )
+
+    # 计算要删除的章节范围
+    start_delete = max_chapter_number - request.count + 1
+    end_delete = max_chapter_number
+    deleted_chapters = list(range(start_delete, end_delete + 1))
+
+    logger.info(
+        "用户 %s 请求删除项目 %s 的最新 %d 章大纲（第 %d-%d 章）",
+        current_user.id,
+        project_id,
+        request.count,
+        start_delete,
+        end_delete,
+    )
+
+    # 检查这些章节是否已有生成的内容
+    chapters_with_content = []
+    for chapter_num in deleted_chapters:
+        stmt = select(Chapter).where(
+            Chapter.project_id == project_id,
+            Chapter.chapter_number == chapter_num,
+        )
+        result = await session.execute(stmt)
+        chapter = result.scalars().first()
+        if chapter and chapter.selected_version:
+            chapters_with_content.append(chapter_num)
+
+    if chapters_with_content:
+        logger.warning(
+            "项目 %s 章节 %s 已有生成内容，但仍执行删除大纲操作",
+            project_id,
+            chapters_with_content,
+        )
+
+    # 删除章节大纲
+    for chapter_num in deleted_chapters:
+        stmt = select(ChapterOutline).where(
+            ChapterOutline.project_id == project_id,
+            ChapterOutline.chapter_number == chapter_num,
+        )
+        result = await session.execute(stmt)
+        outline = result.scalars().first()
+        if outline:
+            await session.delete(outline)
+
+    await session.commit()
+    logger.info("项目 %s 成功删除 %d 章大纲", project_id, len(deleted_chapters))
+
+    # 获取剩余章节数
+    stmt = select(ChapterOutline).where(ChapterOutline.project_id == project_id)
+    result = await session.execute(stmt)
+    remaining_chapters = len(result.scalars().all())
+
+    return {
+        "message": f"成功删除{len(deleted_chapters)}章大纲",
+        "deleted_chapters": deleted_chapters,
+        "remaining_chapters": remaining_chapters,
+        "warning": f"章节 {chapters_with_content} 已有生成内容" if chapters_with_content else None,
+    }
+
+
+@router.post("/novels/{project_id}/chapter-outlines/{chapter_number}/regenerate", response_model=Dict[str, Any])
+async def regenerate_chapter_outline(
+    project_id: str,
+    chapter_number: int,
+    request: RegenerateChapterOutlineRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    重新生成指定章节的大纲
+
+    支持使用可选的优化提示词来引导AI生成更符合预期的章节大纲。
+
+    Args:
+        project_id: 项目ID
+        chapter_number: 要重新生成的章节号
+        request: 包含prompt（优化提示词，可选）
+
+    Returns:
+        包含重新生成的章节大纲
+    """
+    novel_service = NovelService(session)
+    prompt_service = PromptService(session)
+    llm_service = LLMService(session)
+
+    await novel_service.ensure_project_owner(project_id, current_user.id)
+
+    logger.info(
+        "用户 %s 请求重新生成项目 %s 第 %s 章大纲，提示词: %s",
+        current_user.id,
+        project_id,
+        chapter_number,
+        request.prompt or "无",
+    )
+
+    # 获取当前章节大纲
+    stmt = (
+        select(ChapterOutline)
+        .where(
+            ChapterOutline.project_id == project_id,
+            ChapterOutline.chapter_number == chapter_number,
+        )
+    )
+    result = await session.execute(stmt)
+    existing_outline = result.scalars().first()
+
+    if not existing_outline:
+        raise HTTPException(status_code=404, detail=f"第{chapter_number}章大纲不存在")
+
+    # 获取大纲提示词
+    outline_prompt = await prompt_service.get_prompt("outline")
+    if not outline_prompt:
+        logger.error("缺少大纲提示词，项目 %s 大纲生成失败", project_id)
+        raise HTTPException(status_code=500, detail="缺少大纲提示词")
+
+    # 获取项目蓝图
+    project_schema = await novel_service.get_project_schema(project_id, current_user.id)
+    blueprint_dict = project_schema.blueprint.model_dump()
+
+    # 准备LLM请求payload
+    payload = {
+        "novel_blueprint": blueprint_dict,
+        "wait_to_generate": {
+            "start_chapter": chapter_number,
+            "num_chapters": 1,
+        },
+        "current_outline": {
+            "title": existing_outline.title,
+            "summary": existing_outline.summary,
+        },
+    }
+
+    # 如果有优化提示词，添加到payload
+    if request.prompt:
+        payload["optimization_prompt"] = request.prompt
+
+    # 调用LLM重新生成大纲
+    response = await llm_service.get_llm_response(
+        system_prompt=outline_prompt,
+        conversation_history=[{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
+        temperature=0.7,
+        user_id=current_user.id,
+        timeout=180.0,
+    )
+
+    # 解析LLM响应
+    normalized = unwrap_markdown_json(remove_think_tags(response))
+    try:
+        data = json.loads(normalized)
+    except json.JSONDecodeError as exc:
+        logger.error("章节大纲重新生成失败，JSON解析错误: %s", exc)
+        raise HTTPException(status_code=500, detail="章节大纲重新生成失败") from exc
+
+    # 更新章节大纲
+    chapters = data.get("chapters", [])
+    if not chapters:
+        raise HTTPException(status_code=500, detail="LLM未返回章节大纲")
+
+    new_outline_data = chapters[0]
+    existing_outline.title = new_outline_data.get("title", existing_outline.title)
+    existing_outline.summary = new_outline_data.get("summary", existing_outline.summary)
+
+    await session.commit()
+    logger.info("项目 %s 第 %s 章大纲已重新生成", project_id, chapter_number)
+
+    return {
+        "message": f"第{chapter_number}章大纲已重新生成",
+        "chapter_outline": {
+            "chapter_number": chapter_number,
+            "title": existing_outline.title,
+            "summary": existing_outline.summary,
+        },
+    }
+
+
+@router.post("/novels/{project_id}/part-outlines/regenerate", response_model=PartOutlineGenerationProgress)
+async def regenerate_part_outlines(
+    project_id: str,
+    request: RegeneratePartOutlinesRequest,
+    session: AsyncSession = Depends(get_session),
+    current_user: UserInDB = Depends(get_current_user),
+) -> PartOutlineGenerationProgress:
+    """
+    重新生成部分大纲
+
+    支持使用可选的优化提示词来引导AI生成更优质的部分大纲结构。
+    会覆盖原有的所有部分大纲。
+
+    Args:
+        project_id: 项目ID
+        request: 包含prompt（优化提示词，可选）
+
+    Returns:
+        新的部分大纲生成进度
+    """
+    logger.info(
+        "用户 %s 请求重新生成项目 %s 的部分大纲，提示词: %s",
+        current_user.id,
+        project_id,
+        request.prompt or "无",
+    )
+
+    part_service = PartOutlineService(session)
+    novel_service = NovelService(session)
+
+    # 获取项目信息
+    project_schema = await novel_service.get_project_schema(project_id, current_user.id)
+    blueprint = project_schema.blueprint
+
+    if not blueprint:
+        raise HTTPException(status_code=404, detail="项目蓝图不存在")
+
+    # 检查是否需要部分大纲
+    if not blueprint.needs_part_outlines:
+        raise HTTPException(status_code=400, detail="该项目不需要部分大纲（章节数≤50）")
+
+    # 获取当前配置
+    total_chapters = blueprint.total_chapters or 0
+    chapters_per_part = blueprint.chapters_per_part or 25
+
+    if total_chapters == 0:
+        raise HTTPException(status_code=400, detail="项目总章节数未设置")
+
+    # 调用部分大纲生成服务，并传入优化提示词
+    # 重新生成时跳过状态更新，避免状态机错误
+    return await part_service.generate_part_outlines(
+        project_id=project_id,
+        user_id=current_user.id,
+        total_chapters=total_chapters,
+        chapters_per_part=chapters_per_part,
+        optimization_prompt=request.prompt,
+        skip_status_update=True,  # 重新生成时不更新项目状态
+    )
 
 
 # ------------------------------------------------------------------
