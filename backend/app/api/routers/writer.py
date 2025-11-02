@@ -1136,35 +1136,51 @@ async def delete_latest_chapter_outlines(
 
     if chapters_with_content:
         logger.warning(
-            "项目 %s 章节 %s 已有生成内容，但仍执行删除大纲操作",
+            "项目 %s 章节 %s 已有生成内容，将执行级联删除（删除章节内容、向量库数据和大纲）",
             project_id,
             chapters_with_content,
         )
 
-    # 删除章节大纲
-    for chapter_num in deleted_chapters:
-        stmt = select(ChapterOutline).where(
-            ChapterOutline.project_id == project_id,
-            ChapterOutline.chapter_number == chapter_num,
-        )
-        result = await session.execute(stmt)
-        outline = result.scalars().first()
-        if outline:
-            await session.delete(outline)
+    # 级联删除：删除向量库数据
+    from ...services.vector_store_service import VectorStoreService
+    from ...services.chapter_ingest_service import ChapterIngestionService
+    from ...services.llm_service import LLMService
 
-    await session.commit()
-    logger.info("项目 %s 成功删除 %d 章大纲", project_id, len(deleted_chapters))
+    llm_service = LLMService(session)
+    vector_store = VectorStoreService()
+    ingest_service = ChapterIngestionService(llm_service=llm_service, vector_store=vector_store)
+
+    try:
+        await ingest_service.delete_chapters(project_id, deleted_chapters)
+        logger.info("项目 %s 成功删除章节向量库数据: %s", project_id, deleted_chapters)
+    except Exception as exc:
+        logger.warning("删除章节向量库数据失败，但继续执行: %s", exc)
+
+    # 级联删除：删除Chapter记录（包括版本、评审等关联数据）和ChapterOutline
+    # 使用NovelService的delete_chapters方法，它会处理所有级联删除
+    novel_service = NovelService(session)
+    await novel_service.delete_chapters(project_id, deleted_chapters)
+
+    logger.info("项目 %s 成功级联删除 %d 章（包括大纲、章节内容和向量数据）", project_id, len(deleted_chapters))
 
     # 获取剩余章节数
     stmt = select(ChapterOutline).where(ChapterOutline.project_id == project_id)
     result = await session.execute(stmt)
     remaining_chapters = len(result.scalars().all())
 
+    # 根据是否有章节内容，返回不同的消息
+    if chapters_with_content:
+        message = f"成功级联删除{len(deleted_chapters)}章（包括大纲、章节内容和向量数据）"
+        warning = f"已删除章节 {chapters_with_content} 的所有数据（内容、向量、大纲）"
+    else:
+        message = f"成功删除{len(deleted_chapters)}章大纲"
+        warning = None
+
     return {
-        "message": f"成功删除{len(deleted_chapters)}章大纲",
+        "message": message,
         "deleted_chapters": deleted_chapters,
         "remaining_chapters": remaining_chapters,
-        "warning": f"章节 {chapters_with_content} 已有生成内容" if chapters_with_content else None,
+        "warning": warning,
     }
 
 

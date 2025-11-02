@@ -232,10 +232,10 @@ docker compose logs -f app
 - `rag_summaries`: 章节摘要(project_id, chapter_number, summary, embedding)
 
 **切分策略**:
-- 优先使用 `langchain-text-splitters` 的 `RecursiveCharacterTextSplitter`
+- 优先使用 `langchain-text-splitters` 的 `RecursiveCharacterTextSplitter`(推荐安装以获得更好的语义切分效果)
 - `chunk_size=480`(默认),`chunk_overlap=120`
 - 分隔符优先级: 双换行 > 单换行 > 句号/问号/感叹号 > 逗号 > 空格
-- 未安装依赖时回退到内置段落切分
+- 若未安装 `langchain-text-splitters`,会自动回退到内置段落切分器(日志会提示降级)
 
 **检索流程**:
 1. 将章节标题 + 纲要摘要转为查询向量(`LLMService.get_embedding`)
@@ -373,6 +373,12 @@ system_prompt = await prompt_service.get_prompt("writing")
 - 查看检索结果: `ChapterContextService.build_chapter_context` 包含详细的检索日志
 - 若检索失败,系统会降级为"蓝图 + 历史摘要"模式继续生成
 
+**常见问题排查**:
+- 向量库未初始化: 检查 `VECTOR_DB_URL` 是否正确配置
+- 文本切分效果不佳: 默认使用 `langchain-text-splitters`,若未安装会回退到内置切分器(检查日志提示)
+- 嵌入模型调用失败: 检查 `EMBEDDING_PROVIDER` 和对应的 API 配置(`OPENAI_*` 或 `OLLAMA_*`)
+- RAG 检索结果为空: 确认章节已完成向量入库(选择版本或手动编辑后触发)
+
 ### 切换数据库提供者
 
 ```bash
@@ -384,6 +390,21 @@ DB_PROVIDER=sqlite  # 或 mysql
 ```
 
 重启后端服务后,首次启动会自动建表。
+
+### 测试
+
+项目当前**不包含自动化测试**。如需添加测试:
+
+```bash
+# 后端测试(需先安装 pytest)
+cd backend
+pip install pytest pytest-asyncio httpx
+pytest
+
+# 前端测试(需先配置测试框架)
+cd frontend
+# 项目暂未配置前端测试框架
+```
 
 ### 验证安装和配置
 
@@ -426,3 +447,17 @@ tail -f backend/storage/debug.log
 - **配置优先级**: 用户级 LLM 配置 > 系统配置表 > 环境变量默认值
 - **向量检索降级**: 若向量库未配置或查询失败,章节生成仍可继续(无 RAG 增强)
 - **多版本生成**: 章节生成默认返回多个候选版本,用户可评审后选择或手动编辑
+
+## 故障排查速查表
+
+| 问题症状 | 可能原因 | 解决方案 |
+|---------|---------|---------|
+| 后端无法启动 | 环境变量缺失 | 检查 `.env` 文件是否存在,至少配置 `SECRET_KEY` 和 `OPENAI_API_KEY` |
+| 数据库连接失败 | DB_PROVIDER 配置错误 | 确认 `DB_PROVIDER` 为 `sqlite` 或 `mysql`,MySQL 需配置完整连接信息 |
+| LLM 调用超时 | API 响应慢或网络问题 | 检查 `OPENAI_API_BASE_URL` 可访问性,考虑调整超时参数 |
+| 章节生成无 RAG 增强 | 向量库未初始化 | 检查 `VECTOR_DB_URL` 配置和 libsql 连接日志 |
+| 前端 API 请求 404 | 后端未启动或端口不匹配 | 确认后端运行在 8000 端口,前端 Vite 代理配置正确 |
+| 向量入库失败 | 嵌入模型调用失败 | 检查 `EMBEDDING_PROVIDER` 和对应 API 配置(`OPENAI_*` 或 `OLLAMA_*`) |
+| 章节生成版本数错误 | 配置未生效 | 检查 `WRITER_CHAPTER_VERSION_COUNT` 环境变量或系统配置表 |
+| 日志文件不存在 | storage 目录未创建 | 确保 `backend/storage/` 目录存在且有写权限 |
+

@@ -304,40 +304,55 @@ async def generate_blueprint(
     # 数据校验与降级：total_chapters 必须大于0
     total_chapters = blueprint.total_chapters or 0
     if total_chapters <= 0:
-        # 降级策略1：尝试从对话历史中解析用户明确指定的章节数
-        import re
+        # 优先级1：从对话历史中提取conversation_state的chapter_count
         extracted_chapters = None
-        for msg in reversed(formatted_history):  # 从最新的对话开始查找
-            if msg.get("role") == "user":
-                content = msg.get("content", "")
-                # 使用更精确的正则表达式，避免误匹配章节引用
-                # 优先匹配明确指定章节数的表述
-                patterns = [
-                    r'(?:写|创作|生成|共|总共|一共|大概|大约)[\s\w]*?(\d+)\s*章',  # "写100章"、"共100章"
-                    r'(\d+)\s*章(?:左右|以上|以内|的小说|的)',  # "100章左右"、"100章的小说"、"100章的"
-                    r'(?:小说|故事)[\s\w]{0,10}?(\d+)\s*章',  # "小说100章"
-                    r'(?:设置|设定|计划|预计|预期|篇幅|长度|章节数)[\s\w:：]*?(\d+)\s*(?:章|$)',  # "设置512章"、"章节数:512"
-                    r'(\d+)\s*章(?!节)',  # 单独的"512章"（但不匹配"第512章节"）
-                ]
-                for pattern in patterns:
-                    match = re.search(pattern, content)
-                    if match:
-                        candidate = int(match.group(1))
-                        # 排除不合理的章节数（避免误匹配年份等）
-                        if 5 <= candidate <= 10000:
-                            extracted_chapters = candidate
+        for record in reversed(history_records):
+            if record.role == "assistant":
+                try:
+                    normalized = unwrap_markdown_json(record.content)
+                    data = json.loads(normalized)
+                    conversation_state = data.get("conversation_state", {})
+                    if isinstance(conversation_state, dict):
+                        chapter_count = conversation_state.get("chapter_count")
+                        if isinstance(chapter_count, int) and 5 <= chapter_count <= 10000:
+                            extracted_chapters = chapter_count
                             logger.info(
-                                "项目 %s 从对话中解析到用户指定的章节数: %d（原文：%s，匹配模式：%s）",
+                                "项目 %s 从conversation_state中提取到章节数: %d",
                                 project_id,
                                 extracted_chapters,
-                                content[:50],
-                                pattern
                             )
                             break
-                if extracted_chapters:
-                    break
+                except (json.JSONDecodeError, AttributeError):
+                    continue
 
-        # 降级策略2：如果仍未找到，根据对话轮次估算
+        # 优先级2：简化的正则匹配（只保留最可靠的两个模式）
+        if not extracted_chapters:
+            import re
+            for msg in reversed(formatted_history):
+                if msg.get("role") == "user":
+                    content = msg.get("content", "")
+                    # 只使用最明确的两个模式
+                    patterns = [
+                        r'(?:设置|设定|计划|章节数|篇幅)[\s:：]*?(\d+)\s*(?:章|$)',  # "章节数:100"
+                        r'(?:写|创作|生成|共|总共)[\s]*(\d+)\s*章',  # "写100章"
+                    ]
+                    for pattern in patterns:
+                        match = re.search(pattern, content)
+                        if match:
+                            candidate = int(match.group(1))
+                            if 5 <= candidate <= 10000:
+                                extracted_chapters = candidate
+                                logger.info(
+                                    "项目 %s 通过简化正则提取到章节数: %d（原文：%s）",
+                                    project_id,
+                                    extracted_chapters,
+                                    content[:50],
+                                )
+                                break
+                    if extracted_chapters:
+                        break
+
+        # 优先级3：使用保守的默认值
         if extracted_chapters:
             default_chapters = extracted_chapters
         else:
@@ -348,12 +363,17 @@ async def generate_blueprint(
                 default_chapters = 80  # 中等复杂度
             else:
                 default_chapters = 150  # 复杂史诗
+            logger.warning(
+                "项目 %s 无法从对话中提取章节数，使用对话轮次推断的默认值: %d",
+                project_id,
+                default_chapters,
+            )
 
         logger.warning(
             "项目 %s LLM返回的total_chapters=%s无效，使用%s值 %d",
             project_id,
             total_chapters,
-            "解析" if extracted_chapters else "默认",
+            "提取" if extracted_chapters else "默认",
             default_chapters,
         )
         blueprint.total_chapters = default_chapters
